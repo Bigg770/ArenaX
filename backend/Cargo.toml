@@ -58,3 +58,5 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+# Load-test harness for WebSocket fanout and reconnect storms (#118)
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
