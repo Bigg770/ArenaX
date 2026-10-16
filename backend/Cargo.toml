@@ -61,3 +61,7 @@ tokio-test = "0.4"
 # Reusable Soroban contract test fixtures (#107): clients, mock auth,
 # ledger-time control, asset fixtures, and event decoding.
 soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+# Cross-contract integration harness (#108): deploy escrow, dispute, match,
+# token, and prize contracts together and drive end-to-end settlement,
+# dispute/refund, authorization-failure, transfer-failure, and replay paths.
+soroban-sdk-testutils = { version = "22.0.0", features = ["testutils"] }
