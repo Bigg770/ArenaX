@@ -69,6 +69,38 @@ Changes touching authentication, authorization, key handling, payments, balances
 - Keep the branch up to date with `main`; resolve conflicts locally before requesting review.
 - Squash-merge unless the change is intentionally split into reviewable commits.
 
+## Production readiness and release checklist
+
+Every release is evaluated across product, reliability, security, financial controls, and operations — not build success alone. Copy this checklist into the release PR description (or the deployment workflow run) and fill in each row. Every item needs an evidence link or an explicit `N/A` with a rationale; an empty cell is not acceptable.
+
+**Release blockers** must be resolved before the release is promoted. **Post-release monitoring** items are owned after deploy and tracked to closure by the named owner.
+
+### Release blockers (must pass before promotion)
+
+| Item | Evidence link or N/A rationale | Owner |
+| --- | --- | --- |
+| Migrations reviewed, reversible, and backfill documented | | @backend-owners |
+| Rollback plan tested (previous artifact + down migration) | | @backend-owners |
+| Backups taken and restore verified for affected datastores | | @backend-owners |
+| Secrets/config rotated and present in target environment (no secrets in repo) | | @security-reviewers |
+| Provider and webhook readiness confirmed (endpoints, signing keys, retries) | | @server-owners |
+| Contract IDs and Wasm hashes recorded and match the deployed artifacts | | @contracts-owners |
+| SLOs defined for the changed surface with alert thresholds | | @backend-owners |
+| Accessibility checks pass for changed UI (keyboard, contrast, screen reader) | | @frontend-owners |
+| Support escalation path and on-call contact confirmed | | @backend-owners |
+
+### Post-release monitoring (owned after deploy)
+
+| Item | Evidence link or N/A rationale | Monitoring owner |
+| --- | --- | --- |
+| Error rate and latency dashboards watched for the first hour | | @backend-owners |
+| SLO burn-rate alerts firing correctly | | @backend-owners |
+| Webhook/provider delivery success rate within expected range | | @server-owners |
+| On-chain transaction success rate and contract events healthy | | @contracts-owners |
+| Support channel monitored for regressions and escalations | | @backend-owners |
+
+Run a tabletop release review against this checklist before promoting, and close any documentation gaps it surfaces.
+
 ## Definition of done
 
 An issue is done when:

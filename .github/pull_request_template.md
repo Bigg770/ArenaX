@@ -71,6 +71,52 @@ GET    /api/api-keys/stats        - Get aggregate statistics
 - [ ] Revocation prevents further API usage
 - [ ] Scopes are enforced during key validation
 
+## Production Readiness & Release Checklist
+
+Complete every item before merging a release PR. Each item requires an evidence link (CI run, dashboard, PR, doc) or an explicit `N/A` with a one-line rationale. Items marked **[BLOCKER]** must pass before release; items marked **[POST-RELEASE]** are owned by the named monitoring owner after deploy.
+
+### Migrations
+- [ ] **[BLOCKER]** Forward migrations reviewed and applied in staging — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Down/rollback migration tested and documented — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Migration is backward-compatible with the currently deployed version — Evidence: _link or N/A + rationale_
+
+### Rollback
+- [ ] **[BLOCKER]** Rollback procedure documented and rehearsed (app + schema) — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Rollback owner identified for the release window — Evidence: _link or N/A + rationale_
+
+### Backups
+- [ ] **[BLOCKER]** Pre-release backup taken and restore verified — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Backup retention window covers the rollback period — Evidence: _link or N/A + rationale_
+
+### SLOs
+- [ ] **[BLOCKER]** SLOs/dashboards reviewed for the affected services — Evidence: _link or N/A + rationale_
+- [ ] **[POST-RELEASE]** Error-budget burn monitored — Owner: _name_
+- [ ] **[POST-RELEASE]** Latency/throughput regression watch — Owner: _name_
+
+### Secrets
+- [ ] **[BLOCKER]** No secrets committed; new secrets provisioned via the secret manager — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Rotated/expired credentials updated in all environments — Evidence: _link or N/A + rationale_
+
+### Provider / Webhook Readiness
+- [ ] **[BLOCKER]** External providers and webhook endpoints reachable and verified in staging — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Webhook signing/verification keys match the target environment — Evidence: _link or N/A + rationale_
+- [ ] **[POST-RELEASE]** Webhook delivery failures and retries monitored — Owner: _name_
+
+### Contract IDs / Wasm Hashes
+- [ ] **[BLOCKER]** Deployed contract IDs recorded and match the release manifest — Evidence: _link or N/A + rationale_
+- [ ] **[BLOCKER]** Wasm hashes verified against the audited build — Evidence: _link or N/A + rationale_
+
+### Accessibility
+- [ ] **[BLOCKER]** Accessibility checks pass for changed UI (keyboard, contrast, screen reader) — Evidence: _link or N/A + rationale_
+
+### Support Escalation
+- [ ] **[BLOCKER]** Support escalation path and on-call contact published for the release — Evidence: _link or N/A + rationale_
+- [ ] **[POST-RELEASE]** Support ticket volume and escalations monitored — Owner: _name_
+
+### Release Sign-off
+- [ ] **[BLOCKER]** All blockers above checked with evidence or N/A rationale
+- [ ] **[POST-RELEASE]** Post-release monitoring owners named for every [POST-RELEASE] item
+
 ## Dependencies
 - `base64` crate for URL-safe key encoding
 - `sha2` crate for key hashing (SHA-256)
