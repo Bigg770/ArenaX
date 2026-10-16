@@ -58,13 +58,24 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+# Load/saturation benchmark harness (#117): drives the auth, tournament browse/join,
+# match result, leaderboard, and wallet read endpoints against seeded data.
+hdrhistogram = "7.5"
 
 [[test]]
 name = "tournament_lifecycle_e2e"
 path = "tests/tournament_lifecycle_e2e.rs"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "api_load_bench"
+path = "tests/api_load_bench.rs"
+required-features = ["load-bench"]
+
 [features]
 # Enables the deterministic end-to-end tournament lifecycle suite (#112).
 # Off by default so normal builds/tests never require a database or live chain.
 integration-tests = []
+# Enables the API load and saturation benchmark suite (#117).
+# Off by default so normal builds/tests never require a database or live chain.
+load-bench = []

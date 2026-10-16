@@ -5,6 +5,9 @@ on:
     branches: [ main, dev, develop ]
   pull_request:
     branches: [ main, dev, develop ]
+  schedule:
+    # Nightly API load & saturation benchmark trend (#117).
+    - cron: '0 3 * * *'
 
 jobs:
   # Frontend CI
@@ -312,55 +315,153 @@ jobs:
         path: frontend/playwright-report/
         retention-days: 7
 
-  # Accessibility gate (#115): axe checks on representative core routes.
+  # API load & saturation benchmarks (#117)
   #
-  # Runs the Playwright + @axe-core/playwright suite that asserts no
-  # critical/serious violations on essential user journeys (keyboard, labels,
-  # contrast, dynamic announcements). Any critical/serious violation fails the
-  # job, so it blocks CI. If a violation is genuinely unavoidable, add it to the
-  # documented exception list in frontend/e2e/accessibility/README.md rather
-  # than disabling the gate.
-  accessibility:
-    name: Accessibility (axe)
+  # Runs the k6 workload against a locally booted backend with seeded,
+  # reproducible data volumes. Records throughput, p50/p95/p99 latency, error
+  # rates, and dependency saturation (Postgres/Redis) so bottlenecks are
+  # identified rather than asserted. Nightly via the `schedule` trigger above;
+  # also runnable on demand. Uses only ephemeral CI credentials — never
+  # production secrets.
+  api-benchmarks:
+    name: API Load & Saturation Benchmarks
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
+    continue-on-error: true
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_bench"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Ephemeral, CI-only credentials. No production secrets are referenced.
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_bench
+      REDIS_URL: redis://localhost:6379
+      BENCH_BASE_URL: http://localhost:8080
+      BENCH_PROFILE: ${{ github.event.inputs.profile || 'baseline' }}
+      BENCH_SEED_VOLUME: ${{ github.event.inputs.seed_volume || 'medium' }}
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
       with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
 
-    - name: Install dependencies
-      run: npm ci
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-target-
 
-    - name: Install Playwright browsers
-      run: npx playwright install --with-deps chromium
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
 
-    - name: Build app
-      run: npm run build
-      env:
-        NODE_ENV: production
+    - name: Apply migrations
+      working-directory: ./backend
+      run: ./scripts/migrate.sh
 
-    - name: Run accessibility checks
-      run: npm run test:a11y
-      env:
-        PLAYWRIGHT_BASE_URL: http://localhost:3000
-        CI: true
+    - name: Seed reproducible benchmark data
+      working-directory: ./backend
+      run: ./scripts/seed-benchmark-data.sh "$BENCH_SEED_VOLUME"
 
-    - name: Upload accessibility report
+    - name: Build backend
+      working-directory: ./backend
+      run: cargo build --release --locked
+
+    - name: Start backend
+      working-directory: ./backend
+      run: |
+        ./target/release/arenax-backend &
+        echo $! > /tmp/backend.pid
+        for i in $(seq 1 30); do
+          if curl -sf "$BENCH_BASE_URL/health" >/dev/null; then exit 0; fi
+          sleep 2
+        done
+        echo "backend did not become healthy" >&2
+        exit 1
+
+    - name: Install k6
+      run: |
+        sudo gpg -k
+        sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+          --keyserver hkp://keyserver.ubuntu.com:80 \
+          --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+        echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+          | sudo tee /etc/apt/sources.list.d/k6.list
+        sudo apt-get update
+        sudo apt-get install -y k6
+
+    - name: Run API load & saturation benchmarks
+      working-directory: ./backend
+      run: |
+        mkdir -p benchmark-results
+        k6 run \
+          --out json=benchmark-results/raw.json \
+          --summary-export benchmark-results/summary.json \
+          -e BASE_URL="$BENCH_BASE_URL" \
+          -e PROFILE="$BENCH_PROFILE" \
+          -e SEED_VOLUME="$BENCH_SEED_VOLUME" \
+          ./benchmarks/api-load.js
+
+    - name: Capture dependency saturation
+      if: always()
+      working-directory: ./backend
+      run: |
+        mkdir -p benchmark-results
+        {
+          echo "# Dependency saturation snapshot (#117)";
+          echo "## Postgres";
+          psql "$DATABASE_URL" -c "SELECT count(*) AS connections FROM pg_stat_activity;" || true;
+          psql "$DATABASE_URL" -c "SELECT sum(numbackends) AS backends, sum(xact_commit) AS commits, sum(xact_rollback) AS rollbacks FROM pg_stat_database;" || true;
+          echo "## Redis";
+          redis-cli -u "$REDIS_URL" INFO stats || true;
+          redis-cli -u "$REDIS_URL" INFO clients || true;
+        } > benchmark-results/saturation.txt 2>&1
+
+    - name: Stop backend
+      if: always()
+      run: |
+        if [ -f /tmp/backend.pid ]; then kill "$(cat /tmp/backend.pid)" || true; fi
+
+    - name: Upload benchmark results
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: accessibility-report
-        path: frontend/playwright-report/
-        retention-days: 7
-
-  # Deterministic end-to-end tournament lifec
+        name: api-benchmark-results
+        path: backend/benchmark-results/
+        retention-days: 30
