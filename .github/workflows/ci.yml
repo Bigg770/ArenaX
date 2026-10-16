@@ -311,3 +311,33 @@ jobs:
         name: playwright-report
         path: frontend/playwright-report/
         retention-days: 7
+
+  # Generated API reference docs (#121)
+  #
+  # The reference under docs/api/ is generated from the API contract, not
+  # hand-written, so it cannot drift from the handlers. This job regenerates it
+  # from a clean checkout and fails if the committed output differs, which is
+  # how stale generated docs are detected in CI.
+  api-docs:
+    name: API Docs (generated)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Regenerate API reference from contract
+      run: node scripts/generate-api-docs.mjs
+
+    - name: Fail if generated docs are stale
+      run: |
+        if ! git diff --quiet -- docs/api; then
+          echo "::error::Generated API docs are stale. Run 'node scripts/generate-api-docs.mjs' and commit the result."
+          git --no-pager diff -- docs/api
+          exit 1
+        fi

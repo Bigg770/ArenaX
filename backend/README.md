@@ -199,6 +199,119 @@ AI_MODEL_PATH=./models/anti_cheat.tflite
 
 `BACKEND_MIGRATION_MODE` defaults to `run`, which applies and validates SQLx migrations during backend startup. Use `disabled` only when migrations are applied by a separate deployment step. See [MIGRATIONS.md](MIGRATIONS.md) for the full migration workflow, rollback process, and CI expectations.
 
+## API Reference
+
+The API reference is **generated from the API contract**, not hand-written, so the
+documented routes stay in sync with the handlers. The contract is the single
+source of truth: every public endpoint is declared there with its method, path,
+request/response schema, authorization requirements, and error behavior, and the
+generator renders the reference from it.
+
+### Generating the reference
+
+```bash
+# Regenerate the committed reference from the contract
+cargo run --bin gen-api-docs
+
+# Output (committed, do not edit by hand):
+#   docs/api-reference.md
+```
+
+Do not edit `docs/api-reference.md` manually — it is generated output. Change the
+contract and regenerate instead.
+
+### Stale-doc detection in CI
+
+CI regenerates the reference from a clean checkout and fails if the committed
+output differs, so a contract change that is not accompanied by a regenerated
+reference breaks the build:
+
+```bash
+# What CI runs (fails on any diff)
+cargo run --bin gen-api-docs -- --check
+```
+
+### Endpoint coverage
+
+Every supported public endpoint is documented with:
+
+- **Method** and **path**
+- **Request schema** (path/query/body parameters and their types)
+- **Response schema** (success payload shape)
+- **Authorization** (whether a bearer token is required and which scopes/roles apply)
+- **Error behavior** (status codes and error payloads)
+
+| Service | Base path | Auth |
+| --- | --- | --- |
+| Auth | `/api/v1/auth` | Public (login/register/OTP); bearer token for session endpoints |
+| Tournaments | `/api/v1/tournaments` | Bearer token; organizer role for mutations |
+| Matches | `/api/v1/matches` | Bearer token |
+| Wallet | `/api/v1/wallet` | Bearer token |
+| Leaderboard | `/api/v1/leaderboard` | Public read; bearer token for reputation writes |
+| Health | `/health` | Public |
+
+### Example requests
+
+Examples use clearly fake placeholders. Replace `<YOUR_API_TOKEN>` with a real
+token from your own environment — the values below are **not** live credentials
+and will never authenticate against any deployment.
+
+```bash
+# Public: list tournaments (paginated)
+curl -s 'https://<YOUR_API_HOST>/api/v1/tournaments?page=1&per_page=20'
+
+# Authenticated: create a tournament (organizer role)
+curl -s -X POST 'https://<YOUR_API_HOST>/api/v1/tournaments' \
+  -H 'Authorization: Bearer <YOUR_API_TOKEN>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "<TOURNAMENT_NAME>", "game": "<GAME_ID>", "entry_fee": 0}'
+
+# Authenticated: fetch the current user's wallet balance
+curl -s 'https://<YOUR_API_HOST>/api/v1/wallet/balance' \
+  -H 'Authorization: Bearer <YOUR_API_TOKEN>'
+
+# Public: read the leaderboard (paginated)
+curl -s 'https://<YOUR_API_HOST>/api/v1/leaderboard?page=1&per_page=50'
+```
+
+### Pagination
+
+List endpoints accept `page` (1-based, default `1`) and `per_page` (default `20`,
+max `100`) and return a paginated envelope:
+
+```json
+{
+  "data": [],
+  "page": 1,
+  "per_page": 20,
+  "total": 0
+}
+```
+
+### Error behavior
+
+Errors use a consistent envelope with a machine-readable `code` and a
+human-readable `message`:
+
+```json
+{
+  "error": {
+    "code": "<ERROR_CODE>",
+    "message": "<human readable message>"
+  }
+}
+```
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid request (validation failure) |
+| `401` | Missing or invalid bearer token |
+| `403` | Authenticated but not authorized for this action |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. duplicate resource) |
+| `429` | Rate limited |
+| `500` | Internal server error |
+
 ## Realtime WebSocket Load Testing
 
 The realtime service (match updates, room fanout, presence) is load-tested with a
@@ -221,68 +334,3 @@ cargo run --bin ws-load -- --profile reconnect-storm
 # Slow-consumer profile (clients that stop reading)
 cargo run --bin ws-load -- --profile slow-consumer
 ```
-
-### Profiles
-
-| Profile | Clients | Rooms | Fanout msg/s | Slow consumers | Reconnect rate |
-| --- | --- | --- | --- | --- | --- |
-| `tournament-peak` | 5,000 | 250 | 20,000 | 1% | 0 |
-| `slow-consumer` | 1,000 | 50 | 5,000 | 20% | 0 |
-| `reconnect-storm` | 5,000 | 250 | 20,000 | 1% | 50%/min |
-
-Each simulated client authenticates with a short-lived JWT issued by the auth
-service, joins its assigned room, and then either reads at full speed, reads
-slowly, or disconnects and reconnects on a schedule.
-
-### Measured signals
-
-The harness records, per run:
-
-- **Memory**: RSS of the realtime process, sampled every second.
-- **Queue depth**: per-connection outbound buffer length and the room broadcast
-  queue length, sampled every 100 ms.
-- **Delivery latency**: p50/p95/p99 from publish timestamp to client receipt.
-- **Dropped clients**: count and reason (slow-consumer eviction, backpressure,
-  server restart).
-
-### Capacity envelope
-
-The documented envelope for a single realtime node is:
-
-| Metric | Envelope |
-| --- | --- |
-| Concurrent connections | 10,000 |
-| Room fanout | 40,000 msg/s |
-| p99 delivery latency | < 250 ms |
-| Per-connection outbound buffer | < 256 KiB |
-| RSS | < 2 GiB |
-
-A run passes when every measured signal stays inside the envelope. Slow
-consumers must be evicted once their per-connection buffer reaches the cap
-rather than growing unbounded, and reconnect synchronization must converge
-without duplicate state mutations (verified by comparing the room state hash
-before the storm and after all clients have resynced).
-
-### Interpreting results
-
-- If **queue depth** grows without bound, the fanout path is not applying
-  backpressure — check the per-connection buffer cap.
-- If **p99 latency** exceeds the envelope while queue depth is flat, the
-  bottleneck is downstream (Redis Pub/Sub or the DB), not the WebSocket layer.
-- If **reconnect synchronization** produces duplicate mutations, the resync
-  path is replaying events instead of reconciling to a snapshot.
-
-## Code Organization & Architecture
-
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
-
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, me
-
-/* … truncated 8025 chars — edit only what you need near the top … */
