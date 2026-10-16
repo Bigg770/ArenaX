@@ -226,6 +226,103 @@ jobs:
     - name: Run tests
       run: cargo test --all-targets --locked
 
+  # Dependency-failure chaos tests (#119)
+  #
+  # Verifies the system fails safely when PostgreSQL, Redis, object storage,
+  # payment APIs, or Stellar RPC degrade. The chaos harness injects controlled
+  # timeouts, restarts, throttling, and malformed responses, then asserts that
+  # no outage creates duplicate payouts or loses committed match state, that
+  # health/readiness distinguishes recoverable degradation, and that recovery
+  # drains/reconciles pending work back to a healthy state.
+  #
+  # `continue-on-error` mirrors the other backend jobs while the backend is
+  # still stabilising; remove it once the chaos suite is green on `main`.
+  chaos:
+    name: Dependency-Failure Chaos Tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      REDIS_URL: redis://localhost:6379
+      # Bounded chaos scenario: keep the injected faults short so the job
+      # cannot hang if a dependency never recovers.
+      CHAOS_TIMEOUT_MS: "5000"
+      CHAOS_RECOVERY_TIMEOUT_MS: "30000"
+      RUST_BACKTRACE: "1"
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-chaos-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-target-
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Run dependency-failure chaos tests
+      run: cargo test --locked --test chaos_dependencies -- --nocapture --test-threads=1
+
+    - name: Upload chaos scenario report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: chaos-report
+        path: backend/target/chaos-report/
+        retention-days: 7
+        if-no-files-found: ignore
+
   # Contracts CI (Rust)
   contracts:
     name: Contracts
