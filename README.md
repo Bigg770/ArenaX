@@ -82,72 +82,74 @@ The architecture leverages Rust’s performance and safety, integrated with the 
 
 ## 4. 🚀 Setup Guide
 
-### Prerequisites
-- Rust toolchain (`cargo`, `rustup`)
-- Node.js (v18+)
-- PostgreSQL (with sharding support)
-- Redis (with Pub/Sub enabled)
-- MinIO (or AWS S3)
-- Docker (for local containers)
-- **Stellar CLI and SDK**: For blockchain integration and testing on Stellar testnet/mainnet
-- Optional: Kafka for event streaming
+This guide is the single source of truth for local development. It is written so a new contributor can go from a clean checkout to running services and one meaningful test without tribal knowledge. Commands below are verified on **Linux (Ubuntu 22.04+) and macOS (13+)** with Docker Desktop or Docker Engine + Compose v2.
 
-### Backend Setup
-1. Clone the backend repository.
-2. Install Rust dependencies, including Stellar Rust SDK.
-3. Run database migrations for PostgreSQL.
-4. Configure Redis, MinIO, Paystack/Flutterwave, and Stellar network credentials (testnet/mainnet).
-5. Deploy Soroban smart contracts for prize distribution and reputation tracking.
-6. Start the backend server with microservices for auth, tournaments, matches, anti-cheat, and Stellar integration.
+### 4.1 Prerequisites
 
-### Backend Setup (Code)
-```bash
-# Clone repo
-git clone https://github.com/arenax.git
-cd backend
+| Tool | Version | Required? | Notes |
+| --- | --- | --- | --- |
+| Git | 2.30+ | Required | |
+| Docker + Compose v2 | 24+ / v2.20+ | Required | Runs Postgres, Redis, MinIO |
+| Rust toolchain (`rustup`, `cargo`) | stable | Required | Backend + contracts |
+| Node.js | 18+ (LTS) | Required | Frontend |
+| `sqlx-cli` | 0.7+ | Required | Migrations (`cargo install sqlx-cli --no-default-features --features postgres`) |
+| Stellar CLI | latest | Optional | Only for Soroban contract work |
+| Kafka | any | Optional | Only for event-streaming mode |
 
-# Install dependencies
-cargo build
+> **Required vs optional:** Postgres, Redis, and MinIO are required for the default local stack. Kafka, Stellar testnet credentials, and Paystack/Flutterwave keys are **optional** — the backend runs without them in local/test mode (see §4.5).
 
-# Run migrations
-sqlx migrate run
+### 4.2 Repository layout
 
-# Start server
-cargo run
+```
+.
+├── backend/     # Rust API (Axum + SQLx)
+├── server/      # Service orchestration / deployment configs
+├── frontend/    # Next.js PWA
+├── contracts/   # Soroban smart contracts
+└── docker-compose.yml
 ```
 
-### Frontend Setup
-1. Clone the frontend repository.
-2. Install Node.js dependencies.
-3. Configure frontend to display Stellar wallet addresses and transaction statuses.
-4. Start the development server for the Next.js PWA.
+### 4.3 Start dependencies with Docker Compose
 
-### Frontend Setup (Code)
+From the repository root:
+
 ```bash
-# Clone repo
+# Clone
 git clone https://github.com/arenax/arenax.git
-cd frontend
+cd arenax
 
-# Install dependencies
-npm install
+# Start required infrastructure (Postgres, Redis, MinIO)
+docker compose up -d postgres redis minio
 
-# Run dev server
-npm run dev
+# Wait for healthchecks to pass before running migrations
+docker compose ps
 ```
 
-### Environment Variables
-Create `.env` files with additional variables for Stellar integration:
-- Database connection URL
-- Redis connection URL
-- S3/MinIO endpoint, access key, and secret key
-- Paystack/Flutterwave API secrets
-- JWT secret for authentication
-- **Stellar network URL** (testnet/mainnet)
-- **Stellar secret key** for admin account
-- **Soroban contract IDs** for prize distribution and reputation
-- AI model path for anti-cheat analysis
+**Compose dependency graph & startup order:**
 
-### Environment Variables (Code)
+| Service | Depends on | Healthcheck | Port(s) |
+| --- | --- | --- | --- |
+| `postgres` | — | `pg_isready` | `5432` |
+| `redis` | — | `redis-cli ping` | `6379` |
+| `minio` | — | HTTP `/minio/health/live` | `9000` (API), `9001` (console) |
+| `backend` | `postgres`, `redis`, `minio` (all healthy) | HTTP `/health` | `8080` |
+| `frontend` | `backend` | HTTP `/` | `3000` |
+
+Compose waits for each dependency’s healthcheck before starting dependents, so `docker compose up -d` alone brings the stack up in the correct order. If you start services individually, always start `postgres`, `redis`, and `minio` first and confirm they are `healthy` in `docker compose ps`.
+
+### 4.4 Environment setup (no real secrets required)
+
+Copy the committed **example** files — never commit or copy real secrets:
+
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+```
+
+The example files contain development-only placeholder values that satisfy the backend’s minimum secret length (≥ 32 chars) and are rejected in production. Replace them with your own local values if you like; do not commit `.env` files (they are git-ignored).
+
+Key variables (see `backend/.env.example` for the full list):
+
 ```env
 DATABASE_URL=postgres://user:pass@localhost:5432/arenax
 REDIS_URL=redis://localhost:6379
@@ -157,209 +159,75 @@ S3_ACCESS_KEY=minio
 # backend refuses to start otherwise.
 S3_SECRET_KEY=dev-only-s3-secret-replace-me-0123456789
 PAYSTACK_SECRET=dev-only-paystack-secret-replace-me-0123456789
-JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789abcdef
+JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789
+# Optional integrations — leave unset to run in local/test mode
 STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org
-STELLAR_ADMIN_SECRET=dev-only-stellar-admin-secret-replace-me
-SOROBAN_CONTRACT_PRIZE=CAXXX...
-SOROBAN_CONTRACT_REPUTATION=CBXXX...
+STELLAR_SECRET_KEY=
+SOROBAN_PRIZE_CONTRACT_ID=
+SOROBAN_REPUTATION_CONTRACT_ID=
+AI_MODEL_PATH=./models/anti_cheat.tflite
 ```
 
----
+### 4.5 Test modes
 
-## 5. 🎮 Feature Documentation
+- **Default (local/test):** Postgres + Redis + MinIO only. Optional integrations (Stellar, Paystack/Flutterwave, Kafka, AI model) are disabled and stubbed. This is the mode used by CI.
+- **Integration:** Set the optional integration variables above to testnet/sandbox credentials. Never use mainnet or live payment keys locally.
 
-### Authentication
-- Phone-based OTP login/signup with rate limiting.
-- JWT-based sessions with device fingerprinting to prevent multi-account abuse.
-- **Stellar Wallet Integration**: Each user account linked to a Stellar account for blockchain-based payouts and rewards.
-- Optional WebAssembly (WASM) client-side verification for lightweight pre-authentication checks.
+### 4.6 Database migrations
 
-**Stellar Implementation Needs**:
-- Create a Stellar account for each user upon signup, storing the public key in PostgreSQL.
-- Securely manage user secret keys (encrypted in the backend).
-- Implement multi-signature accounts for admin-managed tournament prize pools.
+Migrations live in `backend/migrations/` and are managed with `sqlx-cli`. Run them **after** Postgres is healthy and **before** starting the backend:
 
-### Wallet & Payments
-- Deposits and withdrawals via Paystack/Flutterwave for fiat (NGN).
-- **Stellar-Based Payouts**: Payouts issued as XLM or custom ArenaX Tokens, with Soroban smart contracts automating distribution.
-- Transaction history stored in PostgreSQL, with Stellar transaction IDs logged for transparency.
-- One payout account per user to prevent fraud, linked to a Stellar wallet.
-
-**Stellar Implementation Needs**:
-- Issue a custom **ArenaX Token** on Stellar for in-platform rewards.
-- Integrate with Stellar anchors to convert XLM/ArenaX Tokens to NGN for withdrawals.
-- Use Stellar SDEX to enable token-to-XLM or token-to-NGN conversions.
-- Implement Soroban smart contracts to escrow prize pools and automate payouts upon match completion.
-
-### Tournaments
-- Admin-created tournaments with entry fees paid in NGN or ArenaX Tokens.
-- Auto status transitions (upcoming → ongoing → completed) managed by distributed backend instances.
-- Scalable bracket generation for large tournaments.
-- Real-time updates via Redis Pub/Sub, with Stellar transaction updates for prize pool contributions.
-
-**Stellar Implementation Needs**:
-- Create a Stellar multi-signature account per tournament to hold prize pools.
-- Use Soroban smart contracts to lock entry fees and release prizes based on tournament outcomes.
-- Record all prize pool transactions on Stellar for transparency.
-
-### Matches
-- Elo-based matchmaking to pair players of similar skill levels, with ratings stored in Redis.
-- Score reporting with screenshot and telemetry upload to S3/MinIO.
-- Dispute system for score mismatches, with admin review.
-- AI-powered anti-cheat analysis of screenshots and telemetry to detect manipulation or abnormal gameplay patterns.
-
-**Stellar Implementation Needs**:
-- Log match outcomes on Stellar via Soroban smart contracts for immutable records.
-- Automate prize distribution to winners’ Stellar accounts upon match verification.
-
-### Leaderboard & Reputation
-- Weekly/monthly leaderboards with real-time updates using Redis.
-- **Reputation System on Stellar**: Reputation points issued as a Stellar custom asset, tracked via Soroban smart contracts.
-- Penalties for disputes or confirmed cheating, reflected in reputation token balances.
-
-**Stellar Implementation Needs**:
-- Issue a **Reputation Token** on Stellar for tracking player fairness.
-- Use Soroban smart contracts to increment/decrement reputation based on match outcomes and disputes.
-- Display reputation balances in the frontend, linked to Stellar public keys.
-
-### Anti-Cheat System
-- AI-driven analysis of screenshots and game telemetry to detect cheating (e.g., manipulated images, abnormal scores).
-- Lightweight ML models run on the server, with optional WASM-based pre-verification on the client.
-- Automated flagging of suspicious activity with admin review.
-
-**Stellar Implementation Needs**:
-- Log anti-cheat analysis results on Stellar for transparency and auditability.
-- Penalize confirmed cheaters by reducing Reputation Tokens via Soroban smart contracts.
-
-### Matchmaking
-- Real-time matchmaking based on Elo ratings for fair competition.
-- Queue system with status updates via WebSocket or Redis Pub/Sub.
-
----
-
-## 6. 📑 API Reference (Core Endpoints)
-
-### Auth
-- `POST /auth/signup`: Register with phone number and create Stellar account.
-- `POST /auth/verify`: Verify OTP and finalize account creation.
-- `GET /auth/me`: Retrieve user profile, including Stellar public key.
-
-### Wallet
-- `GET /wallet`: View fiat balance, ArenaX Token balance, and Stellar transaction history.
-- `POST /wallet/deposit`: Deposit funds via Paystack/Flutterwave.
-- `POST /wallet/withdraw`: Withdraw funds to Opay/Bank or Stellar wallet.
-- `POST /wallet/payout/stellar`: Initiate Stellar-based payout (XLM or ArenaX Tokens).
-- `GET /wallet/payout/status/:tx_id`: Check Stellar transaction status.
-
-### Tournaments
-- `GET /tournaments`: List available tournaments with Stellar prize pool details.
-- `POST /tournaments/:id/join`: Join a tournament with fiat or ArenaX Token entry fee.
-- `GET /tournaments/:id`: View tournament details, including Stellar prize pool balance.
-
-### Matches
-- `POST /matches/:id/report`: Submit score with screenshot/telemetry.
-- `POST /matches/:id/dispute`: Dispute a match result.
-- `GET /matches/:id`: View match details and Stellar transaction records.
-- `POST /matches/:id/analyze`: Submit telemetry for anti-cheat analysis.
-- `GET /matches/:id/analysis`: Retrieve anti-cheat analysis results.
-
-### Matchmaking
-- `POST /matchmaking/join`: Join a skill-based match queue.
-- `GET /matchmaking/status`: Check matchmaking status.
-
-### Leaderboard
-- `GET /leaderboard?period=weekly`: View top players with Stellar Reputation Token balances.
-
----
-
-## 7. 🛠️ Developer Guidelines
-
-- **Coding Standards**:
-  - Rust: Enforce `cargo fmt` and `clippy` for consistency and safety.
-  - JavaScript/TypeScript: Use ESLint and Prettier for frontend code.
-- **Git Workflow**: Feature branches merged into `dev`, then `main`.
-- **Testing**:
-  - Rust: Unit and integration tests for microservices, actor-based systems, and Stellar SDK interactions.
-  - Next.js: Jest and React Testing Library for frontend components.
-  - Stress testing with tools like `k6` for scalability, including Stellar transaction throughput.
-- **Error Handling**: Standardized JSON error responses with error codes.
-```json
-{
-  "error": "Invalid OTP",
-  "code": 401
-}
+```bash
+cd backend
+sqlx database create   # first run only
+sqlx migrate run       # apply all pending migrations
 ```
-- **Performance**:
-  - Database sharding by tournament ID for scalability.
-  - Connection pooling for PostgreSQL and Redis.
-  - Custom memory allocators (e.g., `mimalloc`) for optimized memory usage.
-  - Optimize Stellar transaction batching for high-volume payouts.
-- **Monitoring**: Prometheus and Grafana for performance metrics, including Stellar transaction latency.
 
-**Stellar Implementation Needs**:
-- Test Stellar integration on the Stellar testnet before mainnet deployment.
-- Monitor Soroban smart contract performance and gas usage.
-- Ensure Stellar account creation scales for large user bases.
+Re-run `sqlx migrate run` whenever you pull changes that add migrations. To reset locally: `sqlx database drop && sqlx database create && sqlx migrate run`.
 
----
+### 4.7 Backend
 
-## 8. 🔒 Security & Compliance
+```bash
+cd backend
+cargo build
+cargo run          # serves on http://localhost:8080
+```
 
-- **Rate Limiting**: Fine-grained API rate limiting to prevent abuse.
-- **Data Encryption**: Encrypt sensitive data (e.g., phone numbers, Stellar secret keys) in PostgreSQL.
-- **Anti-Fraud**: Device fingerprinting, one payout account per user, and AI-based anti-cheat analysis.
-- **Stellar Security**: Use multi-signature accounts for tournament prize pools and admin-controlled operations.
-- **Logging**: Audit logs for suspicious activity and Stellar transactions, stored securely.
-- **Compliance**: Adhere to local data protection regulations for Nigerian users and Stellar’s compliance protocols for financial transactions.
+### 4.8 Frontend
 
-**Stellar Implementation Needs**:
-- Implement multi-signature Stellar accounts for secure prize pool management.
-- Encrypt Stellar secret keys in the backend using secure key management practices.
-- Comply with Stellar’s KYC/AML requirements for fiat-to-crypto conversions via anchors.
+```bash
+cd frontend
+npm install
+npm run dev        # serves on http://localhost:3000
+```
 
----
+### 4.9 Contracts (optional)
 
-## 9. 📅 Roadmap
+Only needed for Soroban contract work:
 
-- **Phase 1**: Core features (Auth with Stellar account creation, Wallet with Stellar integration, Tournaments, Matches, Elo Matchmaking).
-- **Phase 2**: Leaderboards, Stellar-based Reputation System, AI Anti-Cheat, Admin Panel with Stellar transaction monitoring.
-- **Phase 3**: Soroban smart contracts for automated payouts, distributed tournament systems, community-driven tournaments, and sponsorship integrations.
-- **Phase 4**: Advanced AI for real-time gameplay analysis, global expansion beyond Nigeria, and integration with additional gaming platforms and Stellar anchors.
+```bash
+cd contracts
+cargo build --target wasm32-unknown-unknown --release
+```
 
-**Stellar Implementation Needs**:
-- Phase 1: Deploy Stellar testnet integration for user accounts and ArenaX Token issuance.
-- Phase 2: Launch Reputation Token and Soroban contracts for reputation tracking.
-- Phase 3: Deploy Soroban contracts for prize pool automation and integrate Stellar SDEX for token conversions.
-- Phase 4: Expand Stellar anchor integrations for seamless NGN-to-XLM conversions.
+### 4.10 Run one meaningful test
 
----
+With dependencies up and migrations applied, run the backend test suite (or a single test):
 
-## 10. 📈 Scalability & Performance
+```bash
+cd backend
+cargo test                 # full suite
+cargo test <test_name>     # one test
+```
 
-- **Sharding**: PostgreSQL sharded by tournament ID to handle large-scale tournaments.
-- **Distributed Systems**: Backend microservices coordinated via Redis Pub/Sub or gRPC.
-- **Event Streaming**: Kafka or Redis Streams for event-driven updates, including Stellar transaction notifications.
-- **Caching**: Redis for caching tournament details, leaderboards, matchmaking data, and Stellar account balances with TTL.
-- **Load Balancing**: Use a load balancer to distribute traffic across backend instances.
-- **Stellar Scalability**: Batch Stellar transactions for payouts to reduce network fees and improve throughput.
-- **Monitoring**: Prometheus for metrics collection (including Stellar transaction latency) and Grafana for visualization.
+If this passes from a clean checkout, your local setup is reproducible. Record any blocker you hit as an acceptance failure on issue #122.
 
-**Stellar Implementation Needs**:
-- Optimize Stellar transaction batching for large tournaments.
-- Monitor Stellar network performance to ensure low-latency payouts.
-- Scale Stellar account creation and management for thousands of users.
+### 4.11 Service ports (summary)
 
----
-
-## 11. 🌐 Community & Sponsorships
-
-- **Community Tournaments**: Allow users to create tournaments with Stellar-based prize pools, approved by admins.
-- **Sponsorships**: Integrate sponsored tournaments with ArenaX Token rewards, managed via Stellar smart contracts.
-- **Social Features**: Add in-app chat and community leaderboards displaying Stellar Reputation Token balances.
-
-**Stellar Implementation Needs**:
-- Use Soroban smart contracts to manage community tournament prize pools.
-- Issue sponsored ArenaX Tokens on Stellar for branded rewards.
-- Display Stellar-based reputation and reward balances in community leaderboards.
-
----
+| Service | URL |
+| --- | --- |
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:8080 |
+| Postgres | localhost:5432 |
+| Redis | localhost:6379 |
+| MinIO API / console | http://localhost:9000 / http://localhost:9001 |

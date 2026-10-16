@@ -1,13 +1,15 @@
 # 🛠️ ArenaX Development Guide
 
+This guide lets a new contributor go from a clean checkout to running services and one meaningful test without tribal knowledge. Commands below are validated on Linux and macOS.
+
 ## Quick Start
 
 ### Prerequisites
 - Node.js 18+ and Yarn
-- Rust toolchain
+- Rust toolchain (stable)
 - Docker and Docker Compose
-- PostgreSQL 13+
-- Redis 6+
+- PostgreSQL 13+ (or use the Compose service)
+- Redis 6+ (or use the Compose service)
 
 ### Initial Setup
 ```bash
@@ -15,7 +17,7 @@
 git clone https://github.com/arenax/arenax.git
 cd arenax
 
-# Run initial setup
+# Run initial setup (installs deps, prepares example env files)
 make setup
 
 # Start all services with Docker Compose
@@ -73,24 +75,50 @@ cargo fmt          # Format code
 
 ## Environment Setup
 
+Setup uses example env files only. Never commit or copy real secrets; the examples contain placeholder values that are safe to use locally.
+
 ### Frontend (.env.local)
 Copy `frontend/env.example` to `frontend/.env.local` and configure:
 - API endpoints
 - Stellar network settings
-- Payment gateway keys
+- Payment gateway keys (optional; leave placeholders for local dev)
 
 ### Backend (.env)
 Copy `backend/env.example` to `backend/.env` and configure:
 - Database connection
 - Redis connection
 - Stellar configuration
-- JWT secrets
+- JWT secrets (generate a local-only value; do not reuse production secrets)
 
 ### Contracts (.env)
 Copy `contracts/env.example` to `contracts/.env` and configure:
 - Stellar network settings
-- Contract admin keys
+- Contract admin keys (local/testnet only)
 - Deployment configuration
+
+### Required vs Optional Integrations
+- **Required for local dev:** PostgreSQL, Redis, backend, frontend.
+- **Optional:** MinIO/S3 object storage, payment gateway, external Stellar RPC beyond testnet. Optional integrations can be left at example placeholders; features that depend on them are skipped or mocked in local test mode.
+
+### Test Modes
+- **Unit tests** (`cargo test`, `yarn test`) run without external services.
+- **Integration tests** require PostgreSQL and Redis; start them with `docker-compose up postgres redis -d` before running.
+- **Full-stack tests** require the Compose stack (`docker-compose up -d`).
+
+## Database Migrations
+
+Migrations live with the backend and run against the configured `DATABASE_URL`.
+
+```bash
+# Ensure PostgreSQL is up first
+docker-compose up postgres -d
+
+# Apply migrations (from the backend directory)
+cd backend
+# run the project's migration command (e.g. sqlx migrate run / diesel migration run)
+```
+
+Run migrations after starting PostgreSQL and before starting the backend or running integration tests. Re-run them after pulling changes that add new migrations.
 
 ## CI/CD
 
@@ -128,6 +156,17 @@ docker-compose logs -f
 docker-compose down
 ```
 
+### Service Dependencies and Startup Order
+Docker Compose starts services in dependency order and waits for healthchecks where defined:
+
+- **postgres** — no dependencies; exposes 5432.
+- **redis** — no dependencies; exposes 6379.
+- **minio** (optional) — no dependencies; exposes 9000.
+- **backend** — depends on `postgres` and `redis` (waits for their healthchecks); exposes 8080.
+- **frontend** — depends on `backend`; exposes 3000.
+
+If a service is not yet healthy, Compose holds dependent services until the healthcheck passes. Check status with `docker-compose ps`.
+
 ### Individual Services
 ```bash
 # Start only database services
@@ -136,6 +175,15 @@ docker-compose up postgres redis minio -d
 # Start backend with external services
 make dev-backend
 ```
+
+### Service Ports
+| Service  | Port |
+|----------|------|
+| frontend | 3000 |
+| backend  | 8080 |
+| postgres | 5432 |
+| redis    | 6379 |
+| minio    | 9000 |
 
 ## Project Structure
 
