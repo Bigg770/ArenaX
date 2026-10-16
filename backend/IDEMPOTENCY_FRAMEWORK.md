@@ -243,6 +243,49 @@ cargo test --release idempotency_performance
 curl -X GET http://localhost:8080/api/test/performance?count=1000
 ```
 
+### Stress & Race Boundary Tests
+
+Idempotency and transaction race boundaries are exercised across every write surface that
+mutates durable state. Each scenario runs repeatedly against PostgreSQL and Redis to prove
+that duplicate requests and worker contention cannot produce double side effects.
+
+#### Covered surfaces
+
+| Surface | Duplicate-request invariant | Race invariant |
+| --- | --- | --- |
+| Wallet mutations | Exactly one ledger entry per key | Final balance equals sum of committed entries |
+| Provider events | Exactly one provider event row per key | No duplicate settlement for one provider event |
+| Match finalization | Exactly one finalized match per key | Final match state is terminal and consistent |
+| Tournament transitions | Exactly one transition per key | Tournament state advances monotonically |
+| Settlement workers | Exactly one settlement per key | Ledger totals match settled amounts |
+
+#### Assertions
+
+- **Single durable side effect** - After N identical requests sharing one idempotency key, the
+  ledger/match tables contain exactly one row for that operation. Assertions query the database
+  (ledger entries, balances, match status, tournament state), not just the HTTP status code.
+- **Conflicting payloads rejected** - Reusing an idempotency key with a different payload returns
+  `409 Conflict` and leaves the original durable side effect untouched.
+- **Race invariants** - Concurrent workers/requests are launched in parallel; after they settle,
+  the final ledger and match invariants are asserted (no lost updates, no double spends, no
+  partially applied transitions).
+
+#### Running the stress scenarios
+
+```bash
+# Parallel integration scenarios against PostgreSQL + Redis
+TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
+TEST_REDIS_URL=redis://localhost:6379 \
+cargo test --release idempotency_race -- --test-threads=1
+
+# Repeat each scenario to surface flakiness
+for i in $(seq 1 20); do
+  TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
+  TEST_REDIS_URL=redis://localhost:6379 \
+  cargo test --release idempotency_race || exit 1
+done
+```
+
 ## 🔍 Monitoring & Debugging
 
 ### Health Checks
@@ -326,49 +369,9 @@ ERROR: idempotency::service - Database error
 pub async fn create_payment(
     db_pool: web::Data<DbPool>,
     body: web::Json<CreatePaymentRequest>,
-) -> Result<HttpResponse> {
-    // This endpoint is automatically idempotent
-    // due to middleware configuration
-    
-    let payment = process_payment(body.into_inner()).await?;
-    
-    Ok(HttpResponse::Created().json(payment))
+) -> Result<HttpResponse, Error> {
+    // Idempotency handled by middleware
+    // Business logic here
+    Ok(HttpResponse::Ok().json(response))
 }
 ```
-
-### Custom Conflict Handling
-
-```rust
-// Override default conflict response
-let custom_middleware = IdempotencyMiddleware::new(
-    db_pool,
-    IdempotencyPolicy {
-        conflict_status_code: 422, // Unprocessable Entity
-        ..Default::default()
-    }
-);
-```
-
-### Key Validation
-
-```rust
-use crate::service::idempotency_service::IdempotencyService;
-
-let service = IdempotencyService::default(db_pool);
-match service.validate_key_format("invalid key!") {
-    Ok(()) => println!("Valid key"),
-    Err(e) => println!("Invalid key: {}", e.message),
-}
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
