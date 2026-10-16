@@ -58,3 +58,6 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+# Reusable Soroban contract test fixtures (#107): clients, mock auth,
+# ledger-time control, asset fixtures, and event decoding.
+soroban-sdk = { version = "22.0.0", features = ["testutils"] }
