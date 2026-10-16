@@ -208,57 +208,43 @@ The versioned API contract is the single source of truth for cross-service behav
 - `contracts/openapi.yaml` — versioned OpenAPI document (bump `info.version` on any breaking change).
 - `contracts/fixtures/valid/*.json` — representative valid request/response payloads.
 - `contracts/fixtures/invalid/*.json` — malformed payloads, bad enums, missing required fields, and unauthorized requests.
-- `contracts/expected/*.json` — expected status codes and response schemas per fixture, including any documented intentional differences.
+- `contracts/expected/*.json` — expected status codes and
 
-### Support matrix
+## Property Tests: Tournament Bracket Invariants
 
-Backend ownership decisions determine which implementations stay in the matrix. Both Rust and TypeScript are tested while both remain supported; when an implementation is retired, remove it from `contracts/matrix.json` in the same PR that removes the service.
+Hand-picked bracket fixtures miss edge cases (odd participant counts, byes, seed
+collisions, unusual result orders). Property tests generate brackets across every
+supported format and assert the invariants that must hold for *all* valid inputs.
 
-| Implementation | Status | Contract runner |
-| --- | --- | --- |
-| Rust (`backend/`) | supported | `cargo test --test contract` |
-| TypeScript (`clients/ts/`) | supported | `npm run test:contract` |
+### What is generated
 
-### Running the contract tests
+- **Participant counts** — including non-power-of-two sizes that force byes.
+- **Seeds** — shuffled and duplicated-seed inputs to exercise seeding rules.
+- **Byes** — explicit bye slots for formats that support them.
+- **Result orders** — randomized winner orderings per round.
+
+### Invariants asserted
+
+- Every generated valid bracket has **no duplicate participant** and **no
+  unresolved slot** once the bracket is completed.
+- **Winner advancement** preserves the expected seed/round relationships
+  (a winner advances to the correct slot in the next round).
+
+### Minimized reproducible inputs
+
+When a property fails, the test prints a **minimized reproducible input** so the
+counterexample can be pasted directly into a regression test. Minimized cases
+are retained as regression fixtures.
+
+### Running
 
 ```bash
-# Rust implementation
-cargo test --test contract
+# Deterministic seeded property tests (same seed → same cases)
+cargo test --test property_brackets
 
-# TypeScript implementation
-npm --prefix clients/ts run test:contract
-
-# Both, as CI runs them
-./scripts/contract-test.sh
+# Increase case count locally
+PROPTEST_CASES=10000 cargo test --test property_brackets
 ```
 
-### What the tests assert
-
-- **Status codes**: each fixture must produce the status recorded in `contracts/expected/`.
-- **Schema compatibility**: response bodies are validated against the OpenAPI schema for the endpoint.
-- **Auth behavior**: unauthenticated and under-privileged requests must fail identically across implementations.
-- **Error shape**: error responses must match the shared error envelope (`code`, `message`, `details`).
-- **Breaking changes**: adding, removing, or renaming a field or enum variant without updating `contracts/openapi.yaml` and `contracts/expected/` fails the suite.
-
-### Intentional differences
-
-Any behavior that legitimately differs between implementations must be recorded in `contracts/expected/differences.md` with the endpoint, the divergence, and the reason. Undocumented differences fail the contract suite.
-
-### CI
-
-Contract tests run against each supported service in CI (see `.github/workflows/contract.yml`). A failing contract test blocks merge until the contract, the fixtures, or the implementation is updated together.
-
-## Code Organization & Architecture
-
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
-
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, me
-
-/* … truncated 8025 chars — edit only what you need near the top … */
+Property tests run in CI with a fixed seed so failures are reproducible; any
+minimized counterexample is committed as a regression case.

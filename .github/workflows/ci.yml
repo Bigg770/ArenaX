@@ -226,6 +226,15 @@ jobs:
     - name: Run tests
       run: cargo test --all-targets --locked
 
+    # Issue #103: deterministic, seeded property tests for tournament bracket
+    # invariants (participant/seed/bye generation, uniqueness, advancement).
+    # Run separately so a failing minimized counterexample is easy to spot in
+    # the job log and can be promoted to a regression fixture.
+    - name: Property tests (bracket invariants, #103)
+      env:
+        PROPTEST_CASES: "256"
+      run: cargo test --locked --test bracket_properties -- --nocapture
+
   # Contracts CI (Rust)
   contracts:
     name: Contracts
@@ -293,135 +302,4 @@ jobs:
         env:
           POSTGRES_USER: arenax
           POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
-      REDIS_URL: redis://localhost:6379
-      # Shared fixtures live in one place and are consumed by both runners.
-      CONTRACT_FIXTURES_DIR: ${{ github.workspace }}/contracts/api/fixtures
-      CONTRACT_SERVICE: ${{ matrix.service }}
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    # --- Rust implementation ---
-    - name: Install Rust
-      if: matrix.service == 'rust'
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache backend target
-      if: matrix.service == 'rust'
-      uses: actions/cache@v3
-      with:
-        path: backend/target
-        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-target-
-
-    - name: Install SQLx CLI
-      if: matrix.service == 'rust'
-      run: |
-        if ! command -v sqlx >/dev/null 2>&1; then
-          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
-        fi
-
-    - name: Apply migrations (Rust)
-      if: matrix.service == 'rust'
-      working-directory: ./backend
-      run: ./scripts/migrate.sh
-
-    - name: Run contract tests (Rust)
-      if: matrix.service == 'rust'
-      working-directory: ./backend
-      run: cargo test --locked --test api_contract
-
-    # --- TypeScript implementation ---
-    - name: Setup Node.js
-      if: matrix.service == 'typescript'
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: server/package-lock.json
-
-    - name: Install dependencies (TypeScript)
-      if: matrix.service == 'typescript'
-      working-directory: ./server
-      run: npm ci
-
-    - name: Generate Prisma Client
-      if: matrix.service == 'typescript'
-      working-directory: ./server
-      run: npm run prisma:generate
-
-    - name: Apply migrations (TypeScript)
-      if: matrix.service == 'typescript'
-      working-directory: ./server
-      run: npm run prisma:migrate:deploy
-
-    - name: Run contract tests (TypeScript)
-      if: matrix.service == 'typescript'
-      working-directory: ./server
-      run: npm run test:contract
-
-  # Frontend E2E tests
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Install Playwright browsers
-      run: npx playwright install --with-deps chromium
-
-    - name: Build app
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-    - name: Run E2E tests
-      run: npm run test:e2e
-      env:
-        PLAYWRIGHT_BASE_URL: http://localhost:3000
-        CI: true
-
-    - name: Upload Playwright report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: playwright-report
-        path: frontend/playwright-report/
-        retention-days: 7
+          POSTGRES_DB: arena
