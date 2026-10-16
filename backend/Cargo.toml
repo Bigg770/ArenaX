@@ -70,3 +70,15 @@ proptest = "1.4"
 # players with ratings/games/regions/wait times and cancellation events, then
 # assert queue/pairing invariants (no double-assignment, eligibility, release).
 proptest = "1.4"
+# Fuzz/property tests for financial parsing and amount boundaries (#105):
+# generate malformed decimal strings, webhook payloads, and Soroban
+# amount/weight values, then assert no panics, no silent rounding beyond the
+# documented currency policy, and validate-before-mutate ordering.
+proptest = "1.4"
+# Deterministic, bounded fuzzing harness for the #105 targets (seeded corpus,
+# fixed iteration counts, reproducible in CI).
+libfuzzer-sys = { version = "0.4", optional = true }
+
+[features]
+# Enable with `cargo test --features fuzz` to run the bounded fuzz harness.
+fuzz = ["libfuzzer-sys"]
