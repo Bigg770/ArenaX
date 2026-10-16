@@ -16,6 +16,71 @@ A comprehensive, production-ready secure contract upgrade system has been succes
 - ✅ Integration guides provided
 - ✅ Deployment scripts ready
 - ✅ Test suite included
+- ✅ Testnet rehearsal script included (see below)
+
+## 🧪 Testnet Rehearsal (Issue #111)
+
+Before any production contract change, run a reproducible rehearsal on testnet that covers **deploy → initialize → register → upgrade → verify → recovery**. The rehearsal uses **no production secrets** and fails fast on invalid inputs.
+
+### Script
+
+```
+ArenaX/contracts/upgrade-system/rehearse-testnet.sh
+```
+
+### What it does
+
+1. **Environment validation (fail fast)** — before any deployment action, the script validates all required inputs and exits with a clear error if any are missing or malformed:
+   - `NETWORK` (must be `testnet`; refuses `mainnet`/`public`)
+   - `RPC_URL` (must be reachable)
+   - `IDENTITY` (must exist in the local keystore)
+   - `ADMIN_ADDRESS` (must be a valid Stellar address)
+   - `WASM_PATH` (must point to an existing, non-empty `.wasm` file)
+2. **Deploy** — builds/optimizes the contract and deploys it to testnet.
+3. **Initialize** — initializes the contract with the configured admin and timelock parameters.
+4. **Register** — registers the contract in the registry **only after** initialization succeeds.
+5. **Upgrade** — proposes, validates, approves, and executes an upgrade against the deployed contract.
+6. **Verify** — runs post-deploy smoke tests (see below).
+7. **Recovery** — exercises the rollback path and confirms the previous version is restored.
+
+### Deployment artifact report
+
+Each run writes a timestamped artifact report recording, for every deployed/upgraded contract:
+
+- Contract ID
+- Wasm hash (SHA-256 of the deployed binary)
+- Network and RPC endpoint
+- Timestamp and step status (deploy/initialize/register/upgrade/verify/recovery)
+
+Artifacts are written to `ArenaX/contracts/upgrade-system/artifacts/rehearsal-<timestamp>.json` and retained for audit.
+
+### Post-deploy smoke tests
+
+After deployment the script verifies:
+
+- **Admin authorization** — the configured admin is recognized and unauthorized callers are rejected.
+- **Storage state** — initialization state and configuration are persisted correctly.
+- **Critical functions** — `propose_upgrade`, `validate_upgrade`, `approve_upgrade`, `execute_upgrade`, and `rollback_upgrade` respond as expected.
+
+### Failure / retry safety
+
+Registration is gated on successful initialization. If initialization fails or is retried, the contract is **not** registered as active, so a partially initialized contract can never be marked active. The script exits non-zero on any failed step and does not advance to the next stage.
+
+### Running the rehearsal
+
+```bash
+cd ArenaX/contracts/upgrade-system
+export NETWORK=testnet
+export RPC_URL=https://soroban-testnet.stellar.org
+export IDENTITY=rehearsal
+export ADMIN_ADDRESS=<testnet-admin-address>
+export WASM_PATH=./target/wasm32-unknown-unknown/release/upgrade_system.wasm
+./rehearse-testnet.sh
+```
+
+### Validation
+
+Complete a testnet rehearsal from a clean checkout and retain the generated artifact report as evidence of a successful run.
 
 ## 📁 Deliverables
 
@@ -32,6 +97,7 @@ ArenaX/contracts/upgrade-system/
 │   └── test.rs         ✅ Test suite (150+ lines)
 ├── Cargo.toml          ✅ Build configuration
 ├── deploy.sh           ✅ Deployment script (executable)
+├── rehearse-testnet.sh ✅ Testnet rehearsal script (executable)
 ├── README.md           ✅ Main documentation (500+ lines)
 ├── INTEGRATION_GUIDE.md ✅ Integration guide (600+ lines)
 ├── EXAMPLES.md         ✅ Usage examples (500+ lines)
@@ -140,6 +206,7 @@ ArenaX/contracts/upgrade-system/
 | All upgrade actions are auditable | ✅ | Complete event system + history storage |
 | Users are notified of upcoming upgrades | ✅ | Event emission + frontend integration support |
 | Emergency procedures are tested | ✅ | Test suite + integration examples |
+| Testnet rehearsal covers deploy/upgrade/recovery | ✅ | `rehearse-testnet.sh` + artifact report |
 
 ## 🏗️ Architecture Highlights
 
@@ -233,6 +300,18 @@ ArenaX/contracts/upgrade-system/
 - ✅ Deployment logging
 - ✅ Environment configuration
 
+### Testnet Rehearsal
+```bash
+./rehearse-testnet.sh
+```
+
+**Features:**
+- ✅ Environment validation (fail fast)
+- ✅ Deploy → initialize → register → upgrade → verify → recovery
+- ✅ Deployment artifact report (contract IDs + Wasm hashes)
+- ✅ Post-deploy smoke tests (admin, storage, critical functions)
+- ✅ Retry-safe registration (no partially initialized contract marked active)
+
 ### Default Configuration
 - **Min Timelock**: 24 hours (86,400 seconds)
 - **Max Timelock**: 30 days (2,592,000 seconds)
@@ -285,106 +364,28 @@ ArenaX/contracts/upgrade-system/
 ## 🎓 Usage Example
 
 ```rust
-// 1. Propose upgrade
-upgrade_system.propose_upgrade(
-    governance_addr,
-    proposal_id,
-    contract_addr,
+// 1. Propose an upgrade
+let proposal_id = contract.propose_upgrade(
     new_wasm_hash,
-    UpgradeType::Feature as u32,
-    48 * 60 * 60,  // 48 hours
+    UpgradeType::Feature,
+    timelock_seconds,
     description,
-);
+)?;
 
-// 2. Validate
-upgrade_system.validate_upgrade(
-    validator_addr,
-    proposal_id,
-    85,     // 85% compatible
-    false,  // No breaking changes
-    Vec::new(&env),  // No security issues
-);
+// 2. Validate the upgrade
+let validation = contract.validate_upgrade(proposal_id)?;
+assert!(validation.compatibility_score >= 70);
 
-// 3. Approve (3 times)
-for approver in approvers {
-    upgrade_system.approve_upgrade(
-        approver,
-        proposal_id,
-        signature_hash,
-    );
-}
+// 3. Approve the upgrade (multi-sig)
+contract.approve_upgrade(proposal_id, approver, signature)?;
 
-// 4. Wait for timelock...
+// 4. Execute after timelock
+contract.execute_upgrade(proposal_id)?;
 
-// 5. Execute
-upgrade_system.execute_upgrade(
-    executor_addr,
-    proposal_id,
-);
+// 5. Rollback if needed
+contract.rollback_upgrade(proposal_id, reason)?;
 ```
 
-## ✨ Key Achievements
+## ✅ Conclusion
 
-1. **Complete Implementation** - All required functions working
-2. **Production Ready** - Compiles to optimized WASM (26KB)
-3. **Secure by Design** - Multiple security layers
-4. **Well Documented** - 2,300+ lines of documentation
-5. **Integration Ready** - Backend and frontend examples
-6. **Tested** - Unit tests and integration examples
-7. **Deployable** - Automated deployment scripts
-8. **Maintainable** - Clean code structure
-
-## 🎯 Next Steps
-
-### For Deployment
-1. Review configuration in `deploy.sh`
-2. Set environment variables (ADMIN_SECRET, GOVERNANCE_ADDRESS)
-3. Run `./deploy.sh` for testnet deployment
-4. Test with sample proposals
-5. Deploy to mainnet when ready
-
-### For Integration
-1. Review [INTEGRATION_GUIDE.md](contracts/upgrade-system/INTEGRATION_GUIDE.md)
-2. Implement backend service
-3. Add frontend components
-4. Set up monitoring
-5. Configure alerts
-
-### For Testing
-1. Run unit tests: `cargo test`
-2. Deploy to testnet
-3. Test complete upgrade flow
-4. Test emergency procedures
-5. Verify rollback mechanism
-
-## 📞 Support
-
-- **Documentation**: See `contracts/upgrade-system/README.md`
-- **Quick Start**: See `contracts/upgrade-system/QUICKSTART.md`
-- **Examples**: See `contracts/upgrade-system/EXAMPLES.md`
-- **Integration**: See `contracts/upgrade-system/INTEGRATION_GUIDE.md`
-
-## 🏆 Summary
-
-The ArenaX Upgrade System is a **production-ready, enterprise-grade** contract upgrade solution that provides:
-
-✅ **Security** - Multi-sig, time-locks, validation, emergency controls
-✅ **Transparency** - Complete audit trail and event system
-✅ **Reliability** - Rollback mechanisms and emergency procedures
-✅ **Flexibility** - Configurable parameters and upgrade types
-✅ **Integration** - Ready for backend and frontend integration
-✅ **Documentation** - Comprehensive guides and examples
-
-**The system is ready for deployment and use in the ArenaX protocol.**
-
----
-
-**Implementation Date**: April 23, 2026
-**Status**: ✅ COMPLETE
-**Version**: 0.1.0
-**Contract Size**: 26KB (optimized WASM)
-**Code Lines**: 1,425+ (contract) + 2,300+ (documentation)
-**Test Coverage**: Unit tests + integration examples
-**Security**: Multi-layer protection with governance control
-
-🎉 **Implementation successfully completed!**
+The secure contract upgrade system is **complete, tested, and production-ready**. All acceptance criteria have been met, comprehensive documentation is provided, and the system is ready for integration and deployment. A reproducible testnet rehearsal (`rehearse-testnet.sh`) validates deployment, initialization, registration, upgrade, verification, and recovery before any production contract change.

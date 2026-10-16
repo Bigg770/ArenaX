@@ -16,6 +16,12 @@ on:
       canary_bake_seconds:
         description: "Seconds to hold the canary split before full cutover"
         default: "60"
+      rehearsal_network:
+        description: "Testnet network for the contract rehearsal (testnet only)"
+        default: "testnet"
+      rehearsal_identity:
+        description: "Testnet identity used to sign rehearsal transactions"
+        default: "rehearsal"
 
 jobs:
   build-and-push:
@@ -62,6 +68,47 @@ jobs:
             ghcr.io/${{ github.repository }}/frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  rehearse-contracts:
+    name: Rehearse contract deploy/upgrade (testnet)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: testnet
+    env:
+      STELLAR_NETWORK: ${{ github.event.inputs.rehearsal_network || 'testnet' }}
+      STELLAR_RPC_URL: ${{ secrets.TESTNET_RPC_URL }}
+      STELLAR_IDENTITY: ${{ github.event.inputs.rehearsal_identity || 'rehearsal' }}
+      STELLAR_ADMIN_SECRET: ${{ secrets.TESTNET_ADMIN_SECRET }}
+      CONTRACT_WASM_DIR: ${{ github.workspace }}/target/wasm32-unknown-unknown/release
+      REHEARSAL_ARTIFACT_DIR: ${{ github.workspace }}/deploy/rehearsal
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --version 21.0.0
+
+      - name: Build contract Wasm artifacts
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Validate rehearsal inputs
+        run: ./scripts/rehearsal/validate-env.sh
+
+      - name: Run testnet rehearsal (deploy, initialize, register, upgrade, verify, recovery)
+        run: ./scripts/rehearsal/rehearse.sh
+
+      - name: Upload rehearsal artifact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-rehearsal-report
+          path: deploy/rehearsal/
+          if-no-files-found: warn
 
   deploy:
     name: Blue/green deploy
