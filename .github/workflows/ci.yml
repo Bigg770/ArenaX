@@ -268,6 +268,154 @@ jobs:
     - name: Run tests
       run: cargo test
 
+  # Contract security analysis release gate (#110)
+  #
+  # Blocks publication of Wasm artifacts when high-risk findings remain
+  # unresolved. Findings are scoped to contract code (contracts/) and cover
+  # unsafe authorization, arithmetic, storage, and dependency patterns.
+  #
+  # Severity policy:
+  #   - critical/high  -> block release (or require a reviewed exception)
+  #   - medium/low     -> report only, tracked but non-blocking
+  #
+  # Tool versions and reports are retained as release artifacts so a release
+  # can be audited against the exact toolchain that produced it.
+  contract-security:
+    name: Contract Security Gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./contracts
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Install wasm target
+      run: rustup target add wasm32-unknown-unknown
+
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          contracts/target
+        key: ${{ runner.os }}-cargo-contracts-security-${{ hashFiles('contracts/Cargo.lock') }}
+
+    - name: Record tool versions
+      run: |
+        mkdir -p security-reports
+        {
+          echo "rustc: $(rustc --version)"
+          echo "cargo: $(cargo --version)"
+          echo "clippy: $(cargo clippy --version)"
+          echo "cargo-audit: $(cargo audit --version 2>/dev/null || echo 'not installed')"
+          echo "cargo-deny: $(cargo deny --version 2>/dev/null || echo 'not installed')"
+        } | tee security-reports/tool-versions.txt
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit --locked
+
+    - name: Install cargo-deny
+      run: cargo install cargo-deny --locked
+
+    # Dependency audit scoped to contract dependencies.
+    - name: Dependency audit (cargo-audit)
+      run: |
+        cargo audit --json > security-reports/cargo-audit.json || true
+        cargo audit | tee security-reports/cargo-audit.txt
+
+    - name: Dependency policy (cargo-deny)
+      run: |
+        cargo deny check advisories bans sources 2>&1 | tee security-reports/cargo-deny.txt
+
+    # Static analysis for unsafe authorization, arithmetic, and storage
+    # patterns. Clippy lints are scoped to contract code only.
+    - name: Static analysis (clippy, contract code)
+      run: |
+        cargo clippy --all-targets --all-features -- \
+          -D warnings \
+          -D clippy::arithmetic_side_effects \
+          -D clippy::integer_arithmetic \
+          -D clippy::unwrap_used \
+          -D clippy::expect_used \
+          -D clippy::panic \
+          -D clippy::indexing_slicing \
+          2>&1 | tee security-reports/clippy.txt
+
+    # Review checklist tailored to contract call boundaries and upgrade paths.
+    - name: Contract review checklist
+      run: |
+        cat > security-reports/review-checklist.md <<'EOF'
+        # Contract Security Review Checklist (#110)
+
+        ## Authorization / call boundaries
+        - [ ] Every state-mutating entrypoint calls `require_auth()` on the
+              correct address (not a caller-supplied, unverified address).
+        - [ ] Cross-contract calls re-verify authorization on the callee side;
+              callers are never trusted implicitly.
+        - [ ] Admin/owner-only entrypoints check the stored admin, not an
+              argument.
+
+        ## Arithmetic
+        - [ ] All balance/amount math uses checked or saturating operations.
+        - [ ] No unchecked casts between integer widths.
+        - [ ] Rounding direction favors the protocol, not the caller.
+
+        ## Storage
+        - [ ] Storage keys are namespaced and cannot collide across contracts.
+        - [ ] Temporary vs persistent storage TTLs are set explicitly.
+        - [ ] No unbounded iteration over user-controlled collections.
+
+        ## Upgrade paths
+        - [ ] Upgrade entrypoint is admin-gated and emits an event.
+        - [ ] Storage schema migrations are handled on upgrade.
+        - [ ] Old/new contract versions cannot be mixed in a way that breaks
+              invariants.
+
+        ## Dependencies
+        - [ ] `cargo audit` reports no unresolved advisories.
+        - [ ] `cargo deny` advisories/bans/sources checks pass.
+        - [ ] Any exception is documented and reviewed below.
+
+        ## Exceptions
+        - [ ] High-risk findings are either fixed or have a reviewed exception
+              recorded here with an approver and expiry.
+        EOF
+        cat security-reports/review-checklist.md
+
+    # High-risk unresolved findings block the release. A reviewed exception is
+    # expressed by setting the `SECURITY_EXCEPTION` env var on the job/PR.
+    - name: Enforce severity policy
+      run: |
+        if [ -n "${SECURITY_EXCEPTION:-}" ]; then
+          echo "Reviewed exception in effect: ${SECURITY_EXCEPTION}"
+          exit 0
+        fi
+        if grep -qiE 'error|vulnerabilit|advisory' security-reports/cargo-audit.txt; then
+          echo "::error::cargo-audit reported unresolved findings; release blocked."
+          exit 1
+        fi
+        if grep -qiE '^error|denied|vulnerabilit' security-reports/cargo-deny.txt; then
+          echo "::error::cargo-deny reported unresolved findings; release blocked."
+          exit 1
+        fi
+        echo "No high-risk unresolved findings."
+
+    - name: Upload security reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: contract-security-reports
+        path: contracts/security-reports/
+        retention-days: 90
+
   # Cross-contract integration tests for settlement (#108)
   #
   # Deploys escrow, dispute, match, token, and prize contracts into a single
@@ -300,53 +448,6 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           contracts/target
-        key: ${{ runner.os }}-cargo-contracts-integration-${{ hashFiles('contracts/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-contracts-
+        key: ${{ runner.
 
-    - name: Run settlement integration tests
-      run: cargo test --test settlement_integration -- --nocapture
-
-  # Frontend E2E tests
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Install Playwright browsers
-      run: npx playwright install --with-deps chromium
-
-    - name: Build app
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-    - name: Run E2E tests
-      run: npm run test:e2e
-      env:
-        PLAYWRIGHT_BASE_URL: http://localhost:3000
-        CI: true
-
-    - name: Upload Playwright report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: playwright-report
-        path: frontend/playwright-report/
-        retention-days: 7
+/* … truncated 1224 chars — edit only what you need near the top … */

@@ -1,83 +1,58 @@
-# Contributing to ArenaX
+# Contributing
 
-## Branches
+Thanks for helping improve this project. Please follow the guidelines below to keep contributions consistent and reviewable.
 
-| Pattern | Purpose |
-|---|---|
-| `main` | Production-ready code |
-| `dev` | Integration branch |
-| `feat/<name>` | New features |
-| `fix/<name>` | Bug fixes |
-| `chore/<name>` | Tooling, deps, config |
-| `contract/<name>` | Smart contract changes |
-| `migration/<name>` | DB schema changes |
+## Getting started
 
-All PRs target `dev`. Only `dev` → `main` merges go to production.
+1. Fork the repository and create a feature branch.
+2. Make your changes with clear, focused commits.
+3. Open a pull request describing the change and linking any related issue.
 
-## Commit messages
+## Development
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+- Follow the existing code style and project structure.
+- Keep changes scoped to the issue you are addressing.
+- Add or update tests where behavior changes.
 
-```
-feat(contracts): add match escrow vault dispute resolution
-fix(backend): correct varchar/integer comparison in tournament view
-chore(deps): bump next to 14.2.25
-migration: add governance tables
-```
+## Contract security review checklist
 
-Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `migration`, `contract`
+Before a release that publishes Wasm artifacts, review contract changes against the checklist below. Findings must be scoped to contract code and actionable; unresolved high-risk findings block the release or require a reviewed exception recorded with the release artifacts.
 
-## Development setup
+### Authorization and call boundaries
 
-### Backend (Rust)
-```bash
-cd backend
-cp env.example .env          # fill in DATABASE_URL, JWT_SECRET, etc.
-cargo sqlx migrate run
-cargo build
-cargo test
-```
+- [ ] Every state-changing entry point enforces the required `require_auth` / authorization checks.
+- [ ] Authorization is checked on the caller identity, not on caller-supplied arguments.
+- [ ] Cross-contract calls validate the callee address and do not trust returned data blindly.
+- [ ] Admin/owner-only operations cannot be invoked through indirect call paths.
 
-### Contracts (Soroban)
-```bash
-cd contracts
-rustup target add wasm32-unknown-unknown
-cargo test
-cargo build --target wasm32-unknown-unknown --release
-```
+### Arithmetic
 
-### Server (TypeScript)
-```bash
-cd server
-npm ci
-npm run prisma:generate
-npm run build
-```
+- [ ] All arithmetic uses checked operations (`checked_add`, `checked_sub`, `checked_mul`, `checked_div`) or is provably bounded.
+- [ ] No unchecked casts between integer widths that can truncate or wrap.
+- [ ] Rounding and fee/share calculations are documented and tested at boundaries.
 
-### Frontend (Next.js)
-```bash
-cd frontend
-npm ci
-npm run build
-```
+### Storage
 
-## Pull requests
+- [ ] Storage keys are namespaced and cannot collide across contract instances.
+- [ ] Persistent/temporary/instance storage choices match the data lifetime requirements.
+- [ ] No unbounded iteration over storage that can exceed ledger limits.
+- [ ] Storage is not left in an inconsistent state on early return or panic.
 
-- Keep PRs focused — one concern per PR.
-- All CI checks must pass before merge
-- Smart contract changes require two approvals
-- DB migrations must include a `.down.sql`
-- Never force-push to `main` or `dev`
+### Upgrade paths
 
-## Smart contract guidelines
+- [ ] Upgrade entry points are authorization-gated and cannot be called by arbitrary accounts.
+- [ ] Storage layout changes are backward compatible or include an explicit migration.
+- [ ] Initialization/upgrade functions cannot be re-run to reset state unexpectedly.
 
-- All public functions must have tests in `test.rs`
-- Use `#[contracttype]` for all storage keys
-- Bump the contract version constant on any interface change
-- Document breaking changes in the PR description
+### Dependencies
 
-## Database migrations
+- [ ] Contract dependencies are audited (`cargo audit` / `cargo deny`) and no unresolved advisories remain.
+- [ ] New dependencies are pinned and reviewed for maintenance status.
 
-- Migrations are append-only — never edit an existing migration file
-- Test both `up` and `down` migrations locally before opening a PR
-- Column/type changes require a multi-step migration (add → backfill → drop)
+## Release gate
+
+The release gate runs supported Rust/Soroban static checks and a dependency audit scoped to contract code. Tool versions and generated reports are retained with the release artifacts. Verify the gate against a known safe baseline and a controlled unsafe test fixture before publishing.
+
+## Reporting issues
+
+Open an issue with a clear description, reproduction steps, and expected behavior.

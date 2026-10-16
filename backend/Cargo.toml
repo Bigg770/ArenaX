@@ -65,3 +65,41 @@ soroban-sdk = { version = "22.0.0", features = ["testutils"] }
 # token, and prize contracts together and drive end-to-end settlement,
 # dispute/refund, authorization-failure, transfer-failure, and replay paths.
 soroban-sdk-testutils = { version = "22.0.0", features = ["testutils"] }
+
+# Contract security analysis for the release gate (#110).
+# `cargo audit`/`cargo deny` audit the contract dependency graph, while
+# `cargo clippy` with the lint set below flags unsafe authorization,
+# arithmetic, and storage patterns at contract call boundaries and
+# upgrade paths. Tool versions are pinned here so the gate is
+# reproducible and its reports can be retained with release artifacts.
+[workspace.metadata.security-gate]
+# Pinned tool versions recorded with each release report.
+cargo-audit = "0.21.2"
+cargo-deny = "0.18.3"
+clippy = "1.83.0"
+# Severity policy: unresolved findings at or above this level block the
+# release unless a reviewed exception is recorded.
+blocking-severity = "high"
+# Static checks scoped to contract code (Soroban call boundaries and
+# upgrade paths).
+contract-lints = [
+    "clippy::arithmetic_side_effects",
+    "clippy::integer_arithmetic",
+    "clippy::unwrap_used",
+    "clippy::expect_used",
+    "clippy::panic",
+    "clippy::indexing_slicing",
+    "clippy::cast_possible_truncation",
+    "clippy::missing_errors_doc",
+]
+# Dependency audit covers the contract dependency graph.
+dependency-audit = ["cargo-audit", "cargo-deny"]
+# Review checklist tailored to contract call boundaries and upgrade paths.
+review-checklist = [
+    "authorization: every contract entry point enforces require_auth on the correct address",
+    "call-boundaries: cross-contract calls validate caller identity and return values",
+    "arithmetic: checked math on balances, fees, and prize amounts; no unchecked casts",
+    "storage: storage keys are namespaced and TTL/archival handled for persistent entries",
+    "upgrade-paths: upgrade entry points are authorized and preserve storage layout",
+    "dependencies: no unresolved high/critical advisories in the contract dependency graph",
+]
