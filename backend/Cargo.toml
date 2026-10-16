@@ -66,3 +66,7 @@ jsonschema = "0.28"
 # Property tests for tournament bracket invariants (#103): generate participant
 # counts, seeds, byes, and result orders, then assert uniqueness/advancement.
 proptest = "1.4"
+# Property tests for matchmaking fairness and uniqueness (#104): generate
+# players with ratings/games/regions/wait times and cancellation events, then
+# assert queue/pairing invariants (no double-assignment, eligibility, release).
+proptest = "1.4"
