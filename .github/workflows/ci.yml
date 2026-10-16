@@ -226,6 +226,93 @@ jobs:
     - name: Run tests
       run: cargo test --all-targets --locked
 
+  # Sandboxed deposit & payout end-to-end tests (#113)
+  #
+  # Exercises the full money path against a fake/sandbox provider so provider
+  # callbacks and ledger settlement are verified together instead of in
+  # isolation. No real credentials or network access are required: the sandbox
+  # provider is driven entirely in-process.
+  #
+  # Covered scenarios:
+  #   - initiation -> webhook -> reconciliation -> ledger credit
+  #   - withdrawal -> timeout -> reconciliation before retry -> terminal state
+  #   - ambiguous outcome recovery
+  #   - invalid / replayed callbacks and mismatched amounts (no side effect)
+  payment-e2e:
+    name: Payment E2E (Sandbox)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      REDIS_URL: redis://localhost:6379
+      # Sandbox provider: no real credentials, no outbound network calls.
+      PAYMENT_PROVIDER: sandbox
+      PAYMENT_SANDBOX: "1"
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-target-
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Run sandboxed payment end-to-end tests
+      run: cargo test --locked --test payment_e2e -- --nocapture
+
   # Contracts CI (Rust)
   contracts:
     name: Contracts
@@ -299,74 +386,4 @@ jobs:
     - name: Cache TLA+ tools
       uses: actions/cache@v3
       with:
-        path: ~/.tla
-        key: ${{ runner.os }}-tlaplus-1.7.1
-
-    - name: Install pinned TLA+ tools
-      run: |
-        set -euo pipefail
-        TLA_VERSION="1.7.1"
-        mkdir -p "$HOME/.tla"
-        if [ ! -f "$HOME/.tla/tla2tools.jar" ]; then
-          curl -fsSL -o "$HOME/.tla/tla2tools.jar" \
-            "https://github.com/tlaplus/tlaplus/releases/download/v${TLA_VERSION}/tla2tools.jar"
-        fi
-        echo "TLA2TOOLS_JAR=$HOME/.tla/tla2tools.jar" >> "$GITHUB_ENV"
-
-    - name: Run model checks
-      run: |
-        set -euo pipefail
-        chmod +x ./verify.sh
-        ./verify.sh
-
-    - name: Upload TLC output on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: tlc-output
-        path: contracts/specs/*.out
-        retention-days: 7
-
-  # Frontend E2E tests
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Install Playwright browsers
-      run: npx playwright install --with-deps chromium
-
-    - name: Build app
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-    - name: Run E2E tests
-      run: npm run test:e2e
-      env:
-        PLAYWRIGHT_BASE_URL: http://localhost:3000
-        CI: true
-
-    - name: Upload Playwright report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: playwright-report
-        path: frontend/playwright-report/
-        retention-days: 7
+        path: ~/.

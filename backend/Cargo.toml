@@ -58,3 +58,7 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+# Sandboxed deposit/payout end-to-end tests (#113) need an in-memory
+# Postgres-compatible database so provider scenarios run in CI without
+# real credentials or network dependency.
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "json"] }

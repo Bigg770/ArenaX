@@ -233,6 +233,59 @@ TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
 cargo test idempotency_integration
 ```
 
+### Sandboxed Deposit & Payout End-to-End Tests
+
+The end-to-end suite exercises the full deposit/payout lifecycle against a fake
+provider so that provider callbacks and ledger settlement are verified together
+rather than in isolation. It runs in CI with no real credentials and no network
+dependency.
+
+#### Fake provider orchestration
+
+A `SandboxProvider` stands in for the real payment provider and drives every
+stage of the lifecycle:
+
+- **Initiation** - returns a deterministic provider reference for a deposit or
+  withdrawal request.
+- **Webhook** - emits signed callbacks (success, failure, replay, tampered
+  signature, mismatched amount) that are fed through the real webhook handler.
+- **Reconciliation** - exposes a queryable provider state so the reconciler can
+  settle pending transactions.
+- **Withdrawal** - simulates payout submission and terminal outcomes.
+- **Ambiguous outcome recovery** - can return a timeout/unknown result so the
+  recovery path is exercised before any retry.
+
+```bash
+# Run the sandboxed end-to-end suite
+cargo test sandbox_e2e
+
+# Run a single scenario
+cargo test sandbox_e2e::deposit_success_credits_ledger_once
+```
+
+#### Scenarios and assertions
+
+| Scenario | Assertion |
+| --- | --- |
+| Successful deposit | Exactly one ledger credit is created for the payment. |
+| Replayed callback | No additional ledger entry; response is idempotent. |
+| Invalid signature callback | Rejected; no financial side effect. |
+| Mismatched amount callback | Rejected; no financial side effect. |
+| Payout timeout | Reconciled before retry; transaction reaches a user-visible terminal state. |
+
+Each scenario asserts on the ledger (entry count and balance) as well as the
+provider-facing status, so a passing test proves the callback and the ledger
+agree.
+
+#### CI execution
+
+The suite is wired into CI and requires no secrets:
+
+```bash
+# No provider credentials or network access required
+cargo test sandbox_e2e -- --nocapture
+```
+
 ### Performance Tests
 
 ```bash
@@ -326,49 +379,30 @@ ERROR: idempotency::service - Database error
 pub async fn create_payment(
     db_pool: web::Data<DbPool>,
     body: web::Json<CreatePaymentRequest>,
-) -> Result<HttpResponse> {
-    // This endpoint is automatically idempotent
-    // due to middleware configuration
-    
-    let payment = process_payment(body.into_inner()).await?;
-    
-    Ok(HttpResponse::Created().json(payment))
+    idempotency_key: web::Header<IdempotencyKey>,
+) -> Result<HttpResponse, Error> {
+    // The middleware guarantees this handler runs at most once per key.
+    let payment = payment_service::create(db_pool, body.into_inner()).await?;
+    Ok(HttpResponse::Ok().json(payment))
 }
 ```
 
-### Custom Conflict Handling
+### Sandboxed End-to-End Flow
 
 ```rust
-// Override default conflict response
-let custom_middleware = IdempotencyMiddleware::new(
-    db_pool,
-    IdempotencyPolicy {
-        conflict_status_code: 422, // Unprocessable Entity
-        ..Default::default()
-    }
-);
-```
+#[actix_web::test]
+async fn deposit_success_credits_ledger_once() {
+    let provider = SandboxProvider::new();
+    let app = test_app(provider.clone()).await;
 
-### Key Validation
+    // Initiate the deposit through the fake provider.
+    let reference = provider.initiate_deposit(amount(100)).await;
 
-```rust
-use crate::service::idempotency_service::IdempotencyService;
+    // Deliver the provider callback through the real webhook handler.
+    provider.deliver_webhook(reference, WebhookOutcome::Success).await;
 
-let service = IdempotencyService::default(db_pool);
-match service.validate_key_format("invalid key!") {
-    Ok(()) => println!("Valid key"),
-    Err(e) => println!("Invalid key: {}", e.message),
+    // Exactly one ledger credit, and the balance reflects it.
+    assert_eq!(ledger::credits_for(&reference).await.len(), 1);
+    assert_eq!(ledger::balance().await, amount(100));
 }
 ```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
