@@ -63,3 +63,25 @@ tokio-test = "0.4"
 # payment APIs, and Stellar RPC.
 wiremock = "0.6"
 tokio = { version = "1.0", features = ["full", "test-util"] }
+# Performance regression microbenchmarks (#120): matchmaking, bracket
+# generation, analytics, and event processing hot paths. Criterion provides
+# statistical analysis (confidence intervals, change detection) so CI can
+# flag meaningful regressions without flaky hard thresholds.
+criterion = { version = "0.5", features = ["html_reports"] }
+rand_chacha = "0.3"
+
+[[bench]]
+name = "matchmaking"
+harness = false
+
+[[bench]]
+name = "bracket_generation"
+harness = false
+
+[[bench]]
+name = "analytics"
+harness = false
+
+[[bench]]
+name = "event_processing"
+harness = false
