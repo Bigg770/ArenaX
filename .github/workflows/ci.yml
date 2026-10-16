@@ -311,3 +311,87 @@ jobs:
         name: playwright-report
         path: frontend/playwright-report/
         retention-days: 7
+
+  # Deterministic end-to-end tournament lifecycle coverage (#112)
+  #
+  # Runs the tagged `@tournament-lifecycle` integration suite against the Rust
+  # backend with fake providers (no live blockchain). The suite seeds a fixed
+  # participant set, drives create -> join -> bracket -> match -> result ->
+  # dispute/cancel -> closure, and asserts the bracket, leaderboard, wallet
+  # ledger, and notifications reconcile to one authoritative result. It tears
+  # down all seeded data, so no persistent test data is left behind.
+  tournament-lifecycle:
+    name: Tournament Lifecycle E2E
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      REDIS_URL: redis://localhost:6379
+      # Fake providers keep the suite deterministic and free of any live
+      # blockchain dependency.
+      PROVIDER_MODE: fake
+      BLOCKCHAIN_ENABLED: "false"
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-target-
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Run tournament lifecycle suite
+      run: cargo test --locked --test tournament_lifecycle -- --test-threads=1

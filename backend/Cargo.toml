@@ -58,3 +58,13 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+[[test]]
+name = "tournament_lifecycle_e2e"
+path = "tests/tournament_lifecycle_e2e.rs"
+required-features = ["integration-tests"]
+
+[features]
+# Enables the deterministic end-to-end tournament lifecycle suite (#112).
+# Off by default so normal builds/tests never require a database or live chain.
+integration-tests = []
