@@ -268,6 +268,65 @@ jobs:
     - name: Run tests
       run: cargo test
 
+  # Formal contract invariants (#109)
+  #
+  # Runs the TLA+ model checks under `contracts/specs/` so the written
+  # invariants stay synchronized with the implemented contract behavior.
+  # The invariant set, its test mapping, named owners, and the documented
+  # model assumptions / abstraction limits live in
+  # `contracts/specs/INVARIANTS.md`.
+  #
+  # TLC is pinned to a specific release so a model-check result is
+  # reproducible; a violated invariant makes TLC exit non-zero and fails
+  # this job with the offending invariant name in the log.
+  contract-invariants:
+    name: Contract Invariants (TLA+)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./contracts/specs
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Java (required by TLC)
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Cache TLA+ tools
+      uses: actions/cache@v3
+      with:
+        path: ~/.tla
+        key: ${{ runner.os }}-tlaplus-1.7.1
+
+    - name: Install pinned TLA+ tools
+      run: |
+        set -euo pipefail
+        TLA_VERSION="1.7.1"
+        mkdir -p "$HOME/.tla"
+        if [ ! -f "$HOME/.tla/tla2tools.jar" ]; then
+          curl -fsSL -o "$HOME/.tla/tla2tools.jar" \
+            "https://github.com/tlaplus/tlaplus/releases/download/v${TLA_VERSION}/tla2tools.jar"
+        fi
+        echo "TLA2TOOLS_JAR=$HOME/.tla/tla2tools.jar" >> "$GITHUB_ENV"
+
+    - name: Run model checks
+      run: |
+        set -euo pipefail
+        chmod +x ./verify.sh
+        ./verify.sh
+
+    - name: Upload TLC output on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: tlc-output
+        path: contracts/specs/*.out
+        retention-days: 7
+
   # Frontend E2E tests
   e2e:
     name: E2E Tests
