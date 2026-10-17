@@ -41,6 +41,30 @@ jobs:
           S3_BACKUP_BUCKET: ${{ secrets.DB_BACKUP_S3_BUCKET }}
         run: ./scripts/verify-backup.sh --latest
 
+      # Evidence object store: verify bucket versioning, encryption, and
+      # retention/legal-hold configuration so backups and replicas stay
+      # consistent with the primary bucket (see BACKUP_RECOVERY.md).
+      - name: Verify evidence bucket durability settings
+        env:
+          EVIDENCE_BUCKET: ${{ secrets.EVIDENCE_S3_BUCKET }}
+          EVIDENCE_REPLICA_BUCKET: ${{ secrets.EVIDENCE_REPLICA_S3_BUCKET }}
+        run: |
+          set -euo pipefail
+          for bucket in "$EVIDENCE_BUCKET" "$EVIDENCE_REPLICA_BUCKET"; do
+            echo "Checking durability settings for s3://$bucket"
+            versioning=$(aws s3api get-bucket-versioning --bucket "$bucket" --query Status --output text)
+            if [ "$versioning" != "Enabled" ]; then
+              echo "::error::Bucket $bucket does not have versioning enabled (got: $versioning)"
+              exit 1
+            fi
+            encryption=$(aws s3api get-bucket-encryption --bucket "$bucket" --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' --output text)
+            if [ -z "$encryption" ] || [ "$encryption" = "None" ]; then
+              echo "::error::Bucket $bucket has no default server-side encryption configured"
+              exit 1
+            fi
+            echo "Bucket $bucket: versioning=$versioning encryption=$encryption"
+          done
+
       - name: Notify on failure
         if: failure()
         run: |

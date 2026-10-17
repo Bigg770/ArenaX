@@ -32,6 +32,45 @@ The ArenaX backend is a high-performance **Rust-based microservices architecture
 - **Smart Contracts**: Soroban contracts for automated operations
 - **Transaction Processing**: Prize pool management and payouts
 
+## Evidence Object Store: Backup, Recovery & Deletion
+
+Evidence objects (match replays, anti-cheat captures, dispute attachments) live in the S3/MinIO object store. Their availability, disaster recovery, and privacy deletion must be consistent across the primary bucket, replicas, and backups.
+
+### Bucket versioning
+
+- Versioning is **enabled** on the primary evidence bucket and every replica bucket. Overwrites and deletes never destroy prior object versions, so an accidental or malicious delete is recoverable.
+- Each evidence object is written once and treated as immutable; corrections are written as a new version, never an in-place overwrite.
+- Version IDs are recorded alongside the evidence hash in the database so a specific version can be restored and verified.
+- Lifecycle rules expire non-current versions only after the retention window (see below); current versions are never auto-expired while under legal hold.
+
+### Encryption
+
+- **At rest**: evidence objects and all backups/replicas use server-side encryption (SSE-S3 or SSE-KMS). KMS keys are scoped per environment and rotated on the documented schedule; backups are encrypted with the same key policy as the primary bucket.
+- **In transit**: all access to the object store (uploads, downloads, replication, backup/restore) uses TLS. Plaintext HTTP access is rejected.
+- Encryption keys and bucket policies are part of the disaster-recovery runbook so a restore reproduces the same access controls.
+
+### Retention & legal hold
+
+- Evidence objects are retained for the documented retention window; retention applies identically to the primary bucket, replicas, and backups.
+- A **legal hold** on an evidence object blocks deletion and version expiration on the primary, all replicas, and all backups until the hold is released. Backup expiration policies must honor active legal holds and never expire held objects.
+- Releasing a hold re-enables normal retention/expiration; the release is audited.
+
+### Deletion propagation
+
+- A privacy/erasure deletion removes the object (all versions) from the primary bucket and is propagated to every replica and backup within the documented propagation window.
+- Deletion is blocked while a legal hold is active; once released, the deletion resumes and propagates.
+- Deletion events are recorded in an audit log with object key, version IDs, and target stores so propagation can be verified.
+
+### Recovery point & object consistency
+
+- Backups capture a consistent point-in-time snapshot of the evidence bucket (including version metadata). The documented RPO bounds how much recent evidence a restore may lose; the RTO bounds restore time.
+- After a restore, object count and per-object **evidence hashes** are verified against the recorded hashes; any mismatch fails the restore validation.
+- Restores reproduce the original access policy (bucket policy, encryption, legal holds) so restored evidence is neither over- nor under-exposed.
+
+### Validation
+
+Perform a staging restore of a representative evidence object and confirm: the restored object's hash matches the recorded evidence hash, the access policy matches the primary bucket, and any active legal hold is preserved. Verify that a test deletion propagates to replicas and backups within the propagation window.
+
 ## PostgreSQL Capacity & Connection-Pool Budgets
 
 Connection exhaustion and unpredictable latency are the main scaling risks once service replicas and background workers multiply. Every process that talks to PostgreSQL must fit inside a shared, documented connection budget.
@@ -145,138 +184,6 @@ backend/
 │   └── unit/             # Unit tests for individual modules
 ├── target/               # Rust build artifacts
 ├── Cargo.toml           # Rust dependencies and workspace configuration
-├── Cargo.lock           # Locked dependency versions
-├── Dockerfile           # Container configuration
-├── test_ci_locally.sh   # Local CI testing script
-└── README.md            # This documentation
-```
+├── Cargo.lock           # Locked dependency
 
-## Setup & Development
-
-### Prerequisites
-- Rust toolchain (`cargo`, `rustup`) - latest stable version
-- PostgreSQL (v13+) with sharding support
-- Redis (v6+) with Pub/Sub enabled
-- MinIO (or AWS S3) for file storage
-- Docker and Docker Compose for local development
-- Stellar CLI and SDK for blockchain integration
-- Node.js (v18+) for testing scripts
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/arenax/arenax.git
-cd backend
-
-# Install Rust dependencies
-cargo build
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Run database migrations
-./scripts/migrate.sh
-
-# Start the backend server
-cargo run
-
-# Or run with Docker Compose
-docker-compose up -d
-```
-
-### Development Commands
-
-```bash
-# Run tests
-cargo test
-
-# Run tests with coverage
-cargo test --coverage
-
-# Run integration tests
-cargo test --test integration
-
-# Run specific test module
-cargo test auth::tests
-
-# Check code formatting
-cargo fmt
-
-# Run linter
-cargo clippy
-
-# Run local CI tests
-./test_ci_locally.sh
-
-# Database operations
-sqlx migrate add -r <migration_name>
-./scripts/verify-migrations.sh
-./scripts/migrate.sh
-./scripts/migration-status.sh
-./scripts/backup-database.sh
-./scripts/rollback-last-migration.sh
-
-# Stellar integration testing
-./scripts/test_stellar.sh
-```
-
-### Environment Variables
-
-```env
-# Database
-DATABASE_URL=postgres://user:pass@localhost:5432/arenax
-BACKEND_MIGRATION_MODE=run
-REDIS_URL=redis://localhost:6379
-
-# Connection pool budget (see "PostgreSQL Capacity & Connection-Pool Budgets")
-DATABASE_MAX_CONNECTIONS=10
-DATABASE_MIN_CONNECTIONS=2
-DATABASE_ACQUIRE_TIMEOUT_SECS=5
-DATABASE_IDLE_TIMEOUT_SECS=600
-DATABASE_MAX_LIFETIME_SECS=1800
-
-# Storage
-S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minio
-
-# ── Secrets ──────────────────────────────────────────────────────────────────
-# Every secret must be at least 32 characters long and must not be a known
-# placeholder (`supersecretkey`, `changeme`, ...). The backend refuses to start
-# otherwise. Generate real values with `openssl rand -base64 48`.
-S3_SECRET_KEY=dev-only-s3-secret-replace-me-0123456789
-
-# Payments
-PAYSTACK_SECRET=dev-only-paystack-secret-replace-me-0123456789
-FLUTTERWAVE_SECRET=dev-only-flutterwave-secret-replace-me-0123456789
-
-# Authentication
-JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789abcdef
-# Optional: dedicated refresh-token secret (falls back to JWT_SECRET when unset)
-JWT_REFRESH_SECRET=
-
-# Stellar Configuration
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org
-STELLAR_ADMIN_SECRET=dev-only-stellar-admin-secret-replace-me
-SOROBAN_CONTRACT_PRIZE=CAXXX...
-SOROBAN_CONTRACT_REPUTATION=CBXXX...
-
-# AI
-AI_MODEL_PATH=./models/anti_cheat.tflite
-```
-
-`BACKEND_MIGRATION_MODE` defaults to `run`, which applies and validates SQLx migrations during backend startup. Use `disabled` only when migrations are applied by a separate deployment step. See [MIGRATIONS.md](MIGRATIONS.md) for the full migration workflow, rollback process, and CI expectations.
-
-## Code Organization & Architecture
-
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
-
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, me
+/* … truncated 3893 chars — edit only what you need near the top … */
