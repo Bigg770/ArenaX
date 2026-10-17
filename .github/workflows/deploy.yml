@@ -68,17 +68,66 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push
     environment: production
+    env:
+      # Production transport + origin policy. HTTPS-only, least-privilege CORS.
+      # Credentialed requests are enabled, so wildcard origins are forbidden.
+      SECURITY_ENV: production
+      FORCE_HTTPS: "true"
+      HSTS_MAX_AGE: "63072000"
+      HSTS_INCLUDE_SUBDOMAINS: "true"
+      HSTS_PRELOAD: "true"
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "Lax"
+      CORS_ALLOW_CREDENTIALS: "true"
+      CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate production origin policy
+        run: |
+          set -euo pipefail
+          origins="${CORS_ALLOWED_ORIGINS:-}"
+          if [ -z "$origins" ]; then
+            echo "::error::CORS_ALLOWED_ORIGINS must be set for production (no wildcard allowed)."
+            exit 1
+          fi
+          IFS=',' read -ra entries <<< "$origins"
+          for origin in "${entries[@]}"; do
+            origin="$(echo "$origin" | xargs)"
+            [ -z "$origin" ] && continue
+            if [ "$origin" = "*" ]; then
+              echo "::error::Wildcard origin '*' is not permitted with credentialed requests."
+              exit 1
+            fi
+            case "$origin" in
+              https://*) ;;
+              *)
+                echo "::error::Origin '$origin' must use https:// in production."
+                exit 1
+                ;;
+            esac
+          done
+          echo "Production origin policy OK: $origins"
+
       - name: Run blue/green deploy on the deploy host
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          SECURITY_ENV: ${{ env.SECURITY_ENV }}
+          FORCE_HTTPS: ${{ env.FORCE_HTTPS }}
+          HSTS_MAX_AGE: ${{ env.HSTS_MAX_AGE }}
+          HSTS_INCLUDE_SUBDOMAINS: ${{ env.HSTS_INCLUDE_SUBDOMAINS }}
+          HSTS_PRELOAD: ${{ env.HSTS_PRELOAD }}
+          COOKIE_SECURE: ${{ env.COOKIE_SECURE }}
+          COOKIE_SAME_SITE: ${{ env.COOKIE_SAME_SITE }}
+          CORS_ALLOW_CREDENTIALS: ${{ env.CORS_ALLOW_CREDENTIALS }}
+          CORS_ALLOWED_ORIGINS: ${{ env.CORS_ALLOWED_ORIGINS }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 30m
+          envs: SECURITY_ENV,FORCE_HTTPS,HSTS_MAX_AGE,HSTS_INCLUDE_SUBDOMAINS,HSTS_PRELOAD,COOKIE_SECURE,COOKIE_SAME_SITE,CORS_ALLOW_CREDENTIALS,CORS_ALLOWED_ORIGINS
           script: |
             cd /opt/arenax
             git fetch --depth 1 origin main
@@ -89,6 +138,35 @@ jobs:
             export CANARY_WEIGHT=${{ github.event.inputs.canary_weight || '10' }}
             export CANARY_BAKE_SECONDS=${{ github.event.inputs.canary_bake_seconds || '60' }}
             ./scripts/deploy/blue-green-deploy.sh
+
+      - name: Verify security headers on deployed services
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORS_ALLOWED_ORIGINS: ${{ env.CORS_ALLOWED_ORIGINS }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: CORS_ALLOWED_ORIGINS
+          script: |
+            set -euo pipefail
+            cd /opt/arenax
+            primary_origin="$(echo "$CORS_ALLOWED_ORIGINS" | cut -d',' -f1 | xargs)"
+            if [ -z "$primary_origin" ]; then
+              echo "::error::No primary origin configured for header verification."
+              exit 1
+            fi
+            headers="$(curl -fsSI "$primary_origin" || true)"
+            echo "$headers"
+            echo "$headers" | grep -qi '^strict-transport-security:' || { echo "::error::Missing Strict-Transport-Security header"; exit 1; }
+            echo "$headers" | grep -qi '^x-content-type-options: *nosniff' || { echo "::error::Missing X-Content-Type-Options: nosniff"; exit 1; }
+            echo "$headers" | grep -qi '^x-frame-options:' || { echo "::error::Missing X-Frame-Options header"; exit 1; }
+            echo "$headers" | grep -qi '^referrer-policy:' || { echo "::error::Missing Referrer-Policy header"; exit 1; }
+            if echo "$headers" | grep -qi '^access-control-allow-origin: *\*'; then
+              echo "::error::Wildcard Access-Control-Allow-Origin is not permitted."
+              exit 1
+            fi
+            echo "Security header verification passed."
 
       - name: Surface deployment metrics
         if: always()
