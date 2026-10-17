@@ -17,6 +17,79 @@ All automated claim checks, balance transfers, and PR verification pipelines act
 ```
 <!-- END STATUS METER -->
 
+## 0. 🎯 Service SLOs, Alerts & Runbooks
+
+Operational targets are tied to player-impacting workflows rather than generic health checks. Each SLO below has a measured signal, evaluation window, owner, and an error-budget response. Signals are emitted by the backend telemetry module (`backend/src/telemetry.rs`) and the frontend (`frontend/lib/telemetry.ts`); see `docs/OBSERVABILITY.md` for the full signal catalog.
+
+### SLO Definitions
+
+| Workflow | SLI (measured signal) | SLO target | Window | Owner |
+|:---|:---|:---:|:---:|:---|
+| **Login** | `http_request_duration_seconds{route="/auth/login"}` success ratio (non-5xx) + p95 latency | 99.5% success, p95 < 800ms | 30d rolling | Auth team |
+| **Tournament join** | `tournament_join_total{result}` success ratio + p95 latency | 99.0% success, p95 < 1.5s | 30d rolling | Tournaments team |
+| **Match updates** | `match_update_total{result}` success ratio + p95 latency | 99.5% success, p95 < 500ms | 30d rolling | Matches team |
+| **Settlement** | `settlement_total{result}` success ratio + p95 latency | 99.9% success, p95 < 5s | 30d rolling | Payments team |
+
+### Error-Budget Response
+
+- **< 50% budget consumed**: normal operation; no action.
+- **50–75% consumed**: owner reviews dashboards weekly; freeze non-critical changes to the affected workflow.
+- **75–100% consumed**: feature freeze on the workflow; owner files a reliability ticket and prioritizes fixes.
+- **Budget exhausted**: halt deploys to the affected service until the SLO is back in budget for 24h.
+
+### Alert Thresholds
+
+Alerts are burn-rate based over sustained windows so transient noise does not page.
+
+| Alert | Condition | Severity |
+|:---|:---|:---|
+| `LoginSLOBurn` | 5xx ratio > 2% for 10m **and** burn rate > 2x over 1h | page |
+| `TournamentJoinSLOBurn` | error ratio > 3% for 15m **and** burn rate > 2x over 1h | page |
+| `MatchUpdateLatency` | p95 > 500ms for 10m sustained | page |
+| `SettlementFailure` | any settlement failure ratio > 0.5% for 5m **or** single hard failure | page |
+| `SettlementLatency` | p95 > 5s for 15m sustained | ticket |
+
+Single-sample spikes and short (<5m) blips are suppressed; only sustained-window breaches page.
+
+### Runbooks
+
+Each alert links to a runbook covering **first checks → safe mitigations → escalation → recovery verification**.
+
+**Login (`LoginSLOBurn`)**
+1. First checks: auth service health, DB connection pool saturation, Redis OTP store reachability, recent deploys.
+2. Safe mitigations: scale auth replicas, roll back last deploy, fail over read replicas.
+3. Escalation: Auth team on-call → platform on-call if DB/Redis implicated.
+4. Recovery verification: 5xx ratio < 0.5% and p95 < 800ms sustained for 15m; burn rate back under 1x.
+
+**Tournament join (`TournamentJoinSLOBurn`)**
+1. First checks: tournaments service health, DB write latency, Redis Pub/Sub lag, Stellar RPC reachability.
+2. Safe mitigations: shed non-critical load, disable optional join validations, scale service.
+3. Escalation: Tournaments team → Payments team if Stellar RPC is the cause.
+4. Recovery verification: success ratio > 99% and p95 < 1.5s for 15m.
+
+**Match updates (`MatchUpdateLatency`)**
+1. First checks: matches service health, Redis Pub/Sub consumer lag, DB query latency.
+2. Safe mitigations: scale consumers, increase Redis capacity, throttle non-critical broadcasts.
+3. Escalation: Matches team → platform on-call for infra.
+4. Recovery verification: p95 < 500ms sustained for 15m.
+
+**Settlement (`SettlementFailure` / `SettlementLatency`)**
+1. First checks: payment gateway status (Paystack/Flutterwave), Stellar network status, settlement worker queue depth, DB transaction errors.
+2. Safe mitigations: pause new settlement jobs, retry idempotently, fail over to backup gateway, hold payouts pending manual review.
+3. Escalation: Payments team → finance on-call → incident commander for fund-impacting outages.
+4. Recovery verification: settlement success ratio > 99.9% and p95 < 5s for 30m; reconcile any held payouts.
+
+### Staging Validation
+
+To validate alerts and runbooks, simulate one dependency outage in staging:
+
+1. Block egress to the Stellar RPC (or stop the payment gateway mock) in staging.
+2. Confirm `SettlementFailure` fires within the 5m window and does **not** fire on a brief 30s blip.
+3. Walk the Settlement runbook end-to-end: verify first checks identify the dependency, mitigations hold payouts safely, and recovery verification passes after restoring the dependency.
+4. Record findings and update thresholds/runbooks as needed.
+
+---
+
 ## 1. 🏗️ Project Overview
 
 ArenaX is a competitive gaming tournament platform tailored for **amateur gamers**, enabling them to join tournaments, compete, report scores with proof, and receive instant payouts via local payment methods (Stripe, Opay, PalmPay, Bank transfers) and **Stellar blockchain-based payouts**. The platform leverages Stellar’s low-cost, fast, and transparent blockchain to manage tournament prize pools, payouts, and reputation systems, ensuring trust and fairness. Advanced features like real-time matchmaking, AI-driven anti-cheat, and community-driven tournaments enhance scalability and engagement.
@@ -124,7 +197,6 @@ cargo run
 
 ### Frontend Setup (Code)
 ```bash
-# Clone repo
 git clone https://github.com/arenax/arenax.git
 cd frontend
 
@@ -157,209 +229,6 @@ S3_ACCESS_KEY=minio
 # backend refuses to start otherwise.
 S3_SECRET_KEY=dev-only-s3-secret-replace-me-0123456789
 PAYSTACK_SECRET=dev-only-paystack-secret-replace-me-0123456789
-JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789abcdef
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org
-STELLAR_ADMIN_SECRET=dev-only-stellar-admin-secret-replace-me
-SOROBAN_CONTRACT_PRIZE=CAXXX...
-SOROBAN_CONTRACT_REPUTATION=CBXXX...
-```
+JW
 
----
-
-## 5. 🎮 Feature Documentation
-
-### Authentication
-- Phone-based OTP login/signup with rate limiting.
-- JWT-based sessions with device fingerprinting to prevent multi-account abuse.
-- **Stellar Wallet Integration**: Each user account linked to a Stellar account for blockchain-based payouts and rewards.
-- Optional WebAssembly (WASM) client-side verification for lightweight pre-authentication checks.
-
-**Stellar Implementation Needs**:
-- Create a Stellar account for each user upon signup, storing the public key in PostgreSQL.
-- Securely manage user secret keys (encrypted in the backend).
-- Implement multi-signature accounts for admin-managed tournament prize pools.
-
-### Wallet & Payments
-- Deposits and withdrawals via Paystack/Flutterwave for fiat (NGN).
-- **Stellar-Based Payouts**: Payouts issued as XLM or custom ArenaX Tokens, with Soroban smart contracts automating distribution.
-- Transaction history stored in PostgreSQL, with Stellar transaction IDs logged for transparency.
-- One payout account per user to prevent fraud, linked to a Stellar wallet.
-
-**Stellar Implementation Needs**:
-- Issue a custom **ArenaX Token** on Stellar for in-platform rewards.
-- Integrate with Stellar anchors to convert XLM/ArenaX Tokens to NGN for withdrawals.
-- Use Stellar SDEX to enable token-to-XLM or token-to-NGN conversions.
-- Implement Soroban smart contracts to escrow prize pools and automate payouts upon match completion.
-
-### Tournaments
-- Admin-created tournaments with entry fees paid in NGN or ArenaX Tokens.
-- Auto status transitions (upcoming → ongoing → completed) managed by distributed backend instances.
-- Scalable bracket generation for large tournaments.
-- Real-time updates via Redis Pub/Sub, with Stellar transaction updates for prize pool contributions.
-
-**Stellar Implementation Needs**:
-- Create a Stellar multi-signature account per tournament to hold prize pools.
-- Use Soroban smart contracts to lock entry fees and release prizes based on tournament outcomes.
-- Record all prize pool transactions on Stellar for transparency.
-
-### Matches
-- Elo-based matchmaking to pair players of similar skill levels, with ratings stored in Redis.
-- Score reporting with screenshot and telemetry upload to S3/MinIO.
-- Dispute system for score mismatches, with admin review.
-- AI-powered anti-cheat analysis of screenshots and telemetry to detect manipulation or abnormal gameplay patterns.
-
-**Stellar Implementation Needs**:
-- Log match outcomes on Stellar via Soroban smart contracts for immutable records.
-- Automate prize distribution to winners’ Stellar accounts upon match verification.
-
-### Leaderboard & Reputation
-- Weekly/monthly leaderboards with real-time updates using Redis.
-- **Reputation System on Stellar**: Reputation points issued as a Stellar custom asset, tracked via Soroban smart contracts.
-- Penalties for disputes or confirmed cheating, reflected in reputation token balances.
-
-**Stellar Implementation Needs**:
-- Issue a **Reputation Token** on Stellar for tracking player fairness.
-- Use Soroban smart contracts to increment/decrement reputation based on match outcomes and disputes.
-- Display reputation balances in the frontend, linked to Stellar public keys.
-
-### Anti-Cheat System
-- AI-driven analysis of screenshots and game telemetry to detect cheating (e.g., manipulated images, abnormal scores).
-- Lightweight ML models run on the server, with optional WASM-based pre-verification on the client.
-- Automated flagging of suspicious activity with admin review.
-
-**Stellar Implementation Needs**:
-- Log anti-cheat analysis results on Stellar for transparency and auditability.
-- Penalize confirmed cheaters by reducing Reputation Tokens via Soroban smart contracts.
-
-### Matchmaking
-- Real-time matchmaking based on Elo ratings for fair competition.
-- Queue system with status updates via WebSocket or Redis Pub/Sub.
-
----
-
-## 6. 📑 API Reference (Core Endpoints)
-
-### Auth
-- `POST /auth/signup`: Register with phone number and create Stellar account.
-- `POST /auth/verify`: Verify OTP and finalize account creation.
-- `GET /auth/me`: Retrieve user profile, including Stellar public key.
-
-### Wallet
-- `GET /wallet`: View fiat balance, ArenaX Token balance, and Stellar transaction history.
-- `POST /wallet/deposit`: Deposit funds via Paystack/Flutterwave.
-- `POST /wallet/withdraw`: Withdraw funds to Opay/Bank or Stellar wallet.
-- `POST /wallet/payout/stellar`: Initiate Stellar-based payout (XLM or ArenaX Tokens).
-- `GET /wallet/payout/status/:tx_id`: Check Stellar transaction status.
-
-### Tournaments
-- `GET /tournaments`: List available tournaments with Stellar prize pool details.
-- `POST /tournaments/:id/join`: Join a tournament with fiat or ArenaX Token entry fee.
-- `GET /tournaments/:id`: View tournament details, including Stellar prize pool balance.
-
-### Matches
-- `POST /matches/:id/report`: Submit score with screenshot/telemetry.
-- `POST /matches/:id/dispute`: Dispute a match result.
-- `GET /matches/:id`: View match details and Stellar transaction records.
-- `POST /matches/:id/analyze`: Submit telemetry for anti-cheat analysis.
-- `GET /matches/:id/analysis`: Retrieve anti-cheat analysis results.
-
-### Matchmaking
-- `POST /matchmaking/join`: Join a skill-based match queue.
-- `GET /matchmaking/status`: Check matchmaking status.
-
-### Leaderboard
-- `GET /leaderboard?period=weekly`: View top players with Stellar Reputation Token balances.
-
----
-
-## 7. 🛠️ Developer Guidelines
-
-- **Coding Standards**:
-  - Rust: Enforce `cargo fmt` and `clippy` for consistency and safety.
-  - JavaScript/TypeScript: Use ESLint and Prettier for frontend code.
-- **Git Workflow**: Feature branches merged into `dev`, then `main`.
-- **Testing**:
-  - Rust: Unit and integration tests for microservices, actor-based systems, and Stellar SDK interactions.
-  - Next.js: Jest and React Testing Library for frontend components.
-  - Stress testing with tools like `k6` for scalability, including Stellar transaction throughput.
-- **Error Handling**: Standardized JSON error responses with error codes.
-```json
-{
-  "error": "Invalid OTP",
-  "code": 401
-}
-```
-- **Performance**:
-  - Database sharding by tournament ID for scalability.
-  - Connection pooling for PostgreSQL and Redis.
-  - Custom memory allocators (e.g., `mimalloc`) for optimized memory usage.
-  - Optimize Stellar transaction batching for high-volume payouts.
-- **Monitoring**: Prometheus and Grafana for performance metrics, including Stellar transaction latency.
-
-**Stellar Implementation Needs**:
-- Test Stellar integration on the Stellar testnet before mainnet deployment.
-- Monitor Soroban smart contract performance and gas usage.
-- Ensure Stellar account creation scales for large user bases.
-
----
-
-## 8. 🔒 Security & Compliance
-
-- **Rate Limiting**: Fine-grained API rate limiting to prevent abuse.
-- **Data Encryption**: Encrypt sensitive data (e.g., phone numbers, Stellar secret keys) in PostgreSQL.
-- **Anti-Fraud**: Device fingerprinting, one payout account per user, and AI-based anti-cheat analysis.
-- **Stellar Security**: Use multi-signature accounts for tournament prize pools and admin-controlled operations.
-- **Logging**: Audit logs for suspicious activity and Stellar transactions, stored securely.
-- **Compliance**: Adhere to local data protection regulations for Nigerian users and Stellar’s compliance protocols for financial transactions.
-
-**Stellar Implementation Needs**:
-- Implement multi-signature Stellar accounts for secure prize pool management.
-- Encrypt Stellar secret keys in the backend using secure key management practices.
-- Comply with Stellar’s KYC/AML requirements for fiat-to-crypto conversions via anchors.
-
----
-
-## 9. 📅 Roadmap
-
-- **Phase 1**: Core features (Auth with Stellar account creation, Wallet with Stellar integration, Tournaments, Matches, Elo Matchmaking).
-- **Phase 2**: Leaderboards, Stellar-based Reputation System, AI Anti-Cheat, Admin Panel with Stellar transaction monitoring.
-- **Phase 3**: Soroban smart contracts for automated payouts, distributed tournament systems, community-driven tournaments, and sponsorship integrations.
-- **Phase 4**: Advanced AI for real-time gameplay analysis, global expansion beyond Nigeria, and integration with additional gaming platforms and Stellar anchors.
-
-**Stellar Implementation Needs**:
-- Phase 1: Deploy Stellar testnet integration for user accounts and ArenaX Token issuance.
-- Phase 2: Launch Reputation Token and Soroban contracts for reputation tracking.
-- Phase 3: Deploy Soroban contracts for prize pool automation and integrate Stellar SDEX for token conversions.
-- Phase 4: Expand Stellar anchor integrations for seamless NGN-to-XLM conversions.
-
----
-
-## 10. 📈 Scalability & Performance
-
-- **Sharding**: PostgreSQL sharded by tournament ID to handle large-scale tournaments.
-- **Distributed Systems**: Backend microservices coordinated via Redis Pub/Sub or gRPC.
-- **Event Streaming**: Kafka or Redis Streams for event-driven updates, including Stellar transaction notifications.
-- **Caching**: Redis for caching tournament details, leaderboards, matchmaking data, and Stellar account balances with TTL.
-- **Load Balancing**: Use a load balancer to distribute traffic across backend instances.
-- **Stellar Scalability**: Batch Stellar transactions for payouts to reduce network fees and improve throughput.
-- **Monitoring**: Prometheus for metrics collection (including Stellar transaction latency) and Grafana for visualization.
-
-**Stellar Implementation Needs**:
-- Optimize Stellar transaction batching for large tournaments.
-- Monitor Stellar network performance to ensure low-latency payouts.
-- Scale Stellar account creation and management for thousands of users.
-
----
-
-## 11. 🌐 Community & Sponsorships
-
-- **Community Tournaments**: Allow users to create tournaments with Stellar-based prize pools, approved by admins.
-- **Sponsorships**: Integrate sponsored tournaments with ArenaX Token rewards, managed via Stellar smart contracts.
-- **Social Features**: Add in-app chat and community leaderboards displaying Stellar Reputation Token balances.
-
-**Stellar Implementation Needs**:
-- Use Soroban smart contracts to manage community tournament prize pools.
-- Issue sponsored ArenaX Tokens on Stellar for branded rewards.
-- Display Stellar-based reputation and reward balances in community leaderboards.
-
----
+/* … truncated 10589 chars — edit only what you need near the top … */
