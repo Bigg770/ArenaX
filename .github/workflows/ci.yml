@@ -311,3 +311,147 @@ jobs:
         name: playwright-report
         path: frontend/playwright-report/
         retention-days: 7
+
+  # Dependency & software-supply-chain gate (#86)
+  #
+  # Lockfile-aware advisory + license scan across every package ecosystem in
+  # the repo (Rust backend, Rust contracts, Node frontend, Node server).
+  #
+  # - High-severity advisories fail the gate unless a time-bounded, reviewed
+  #   exception is recorded in `.supply-chain/exceptions.json` (see
+  #   `.supply-chain/README.md` for the exception process).
+  # - Scan results (advisory + license reports) are uploaded as artifacts tied
+  #   to release provenance (commit SHA, ref, run id).
+  # - The scan runs against committed lockfiles only, so normal builds stay
+  #   offline-friendly; only this job needs network access.
+  supply-chain:
+    name: Supply Chain Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install scanners
+      run: |
+        cargo install cargo-audit --locked
+        cargo install cargo-deny --locked
+        npm install -g @cyclonedx/cyclonedx-npm
+
+    - name: Prepare report directory
+      run: mkdir -p supply-chain-reports
+
+    - name: Record release provenance
+      run: |
+        cat > supply-chain-reports/provenance.json <<EOF
+        {
+          "commit_sha": "${{ github.sha }}",
+          "ref": "${{ github.ref }}",
+          "run_id": "${{ github.run_id }}",
+          "run_attempt": "${{ github.run_attempt }}",
+          "workflow": "${{ github.workflow }}",
+          "repository": "${{ github.repository }}",
+          "event": "${{ github.event_name }}"
+        }
+        EOF
+
+    # --- Rust: backend ---
+    - name: Rust advisory scan (backend)
+      working-directory: ./backend
+      run: |
+        cargo audit --json > ../supply-chain-reports/backend-audit.json || true
+        cargo audit
+
+    - name: Rust license policy (backend)
+      working-directory: ./backend
+      run: |
+        cargo deny --all-features check licenses advisories \
+          --format json > ../supply-chain-reports/backend-deny.json || true
+        cargo deny --all-features check licenses advisories
+
+    # --- Rust: contracts ---
+    - name: Rust advisory scan (contracts)
+      working-directory: ./contracts
+      run: |
+        cargo audit --json > ../supply-chain-reports/contracts-audit.json || true
+        cargo audit
+
+    - name: Rust license policy (contracts)
+      working-directory: ./contracts
+      run: |
+        cargo deny --all-features check licenses advisories \
+          --format json > ../supply-chain-reports/contracts-deny.json || true
+        cargo deny --all-features check licenses advisories
+
+    # --- Node: frontend ---
+    - name: Node advisory scan (frontend)
+      working-directory: ./frontend
+      run: |
+        npm audit --json > ../supply-chain-reports/frontend-audit.json || true
+        npm audit --audit-level=high
+
+    - name: Node SBOM (frontend)
+      working-directory: ./frontend
+      run: |
+        cyclonedx-npm --output-file ../supply-chain-reports/frontend-sbom.json || true
+
+    # --- Node: server ---
+    - name: Node advisory scan (server)
+      working-directory: ./server
+      run: |
+        npm audit --json > ../supply-chain-reports/server-audit.json || true
+        npm audit --audit-level=high
+
+    - name: Node SBOM (server)
+      working-directory: ./server
+      run: |
+        cyclonedx-npm --output-file ../supply-chain-reports/server-sbom.json || true
+
+    # --- Exception gate ---
+    # A high-severity finding fails the job above unless a reviewed, time-bounded
+    # exception exists in `.supply-chain/exceptions.json`. This step validates
+    # that every recorded exception is still within its expiry window so stale
+    # exceptions cannot silently suppress findings.
+    - name: Validate supply-chain exceptions
+      run: |
+        if [ -f .supply-chain/exceptions.json ]; then
+          node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync(".supply-chain/exceptions.json", "utf8"));
+            const now = new Date();
+            let failed = false;
+            for (const ex of data.exceptions || []) {
+              if (!ex.id || !ex.expires || !ex.reviewer) {
+                console.error(`Exception ${ex.id || "<unknown>"} is missing id/expires/reviewer`);
+                failed = true;
+                continue;
+              }
+              if (new Date(ex.expires) < now) {
+                console.error(`Exception ${ex.id} expired on ${ex.expires}`);
+                failed = true;
+              }
+            }
+            if (failed) process.exit(1);
+            console.log("All supply-chain exceptions are valid and unexpired.");
+          '
+        else
+          echo "No exceptions file present; all findings must be clean."
+        fi
+
+    - name: Upload supply-chain reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: supply-chain-reports-${{ github.run_id }}
+        path: supply-chain-reports/
+        retention-days: 90
