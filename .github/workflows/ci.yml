@@ -2,35 +2,72 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+    branches: [main, develop]
 
 jobs:
-  test:
+  secret-scan:
+    name: Secret scan (current content + history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          node-version: 20
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
+          fetch-depth: 0
 
-  secret-rotation:
-    name: Secret rotation rehearsal (issue #82)
+      - name: Scan current content and history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMITS: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
-    # Rotation-related automated tests: verifies overlap windows, revoke order,
-    # and that credential material is never logged. Runs on every PR so the
-    # runbook stays backed by executable checks.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        working-directory: backend
+        run: cargo build --locked
+
+      - name: Test
+        working-directory: backend
+        run: cargo test --locked
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
-      - name: Run secret rotation tests
-        run: npm test -- --testPathPattern 'secret-rotation|rotation'
-        env:
-          # Placeholder values only; tests must not depend on real credentials.
-          ROTATION_TEST_MODE: 'true'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test -- --run
