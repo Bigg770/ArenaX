@@ -117,6 +117,11 @@ jobs:
             export SOURCE_REVISION=${{ github.sha }}
             export CANARY_WEIGHT=${{ github.event.inputs.canary_weight || '10' }}
             export CANARY_BAKE_SECONDS=${{ github.event.inputs.canary_bake_seconds || '60' }}
+            # Transactional rollout: the deploy script must gate traffic shift on
+            # migration compatibility and readiness. If either gate fails it
+            # exits non-zero BEFORE shifting traffic, leaving the prior release
+            # serving. Rollback restores the previous artifact by digest and
+            # never reverses schema destructively.
             ./scripts/deploy/blue-green-deploy.sh
 
       - name: Surface deployment metrics
@@ -128,5 +133,8 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd /opt/arenax
+            echo "Release: ${{ needs.build-and-push.outputs.image_tag }} (rev ${{ github.sha }})"
+            echo "Backend digest: ${{ needs.build-and-push.outputs.backend_digest }}"
+            echo "Frontend digest: ${{ needs.build-and-push.outputs.frontend_digest }}"
             echo "Last 5 deployments:"
             tail -n 5 deploy/metrics/deployments.jsonl || true
