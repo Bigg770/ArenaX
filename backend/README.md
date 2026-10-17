@@ -32,6 +32,40 @@ The ArenaX backend is a high-performance **Rust-based microservices architecture
 - **Smart Contracts**: Soroban contracts for automated operations
 - **Transaction Processing**: Prize pool management and payouts
 
+## Backup & Recovery Objectives
+
+PostgreSQL is the single source of truth for financial, match, session, and wallet state (see the Redis policy below). Backups therefore cover **PostgreSQL plus the required metadata and secrets** needed to bring the service back: database credentials, JWT signing keys, Stellar signing keys, and payment provider keys.
+
+### Recovery objectives
+
+| Data set | RPO (max data loss) | RTO (max downtime) |
+| --- | --- | --- |
+| PostgreSQL (all schemas) | **15 minutes** (continuous WAL archiving + 15-min base backups) | **60 minutes** |
+| Required metadata (migrations, config) | 0 (versioned in git) | 15 minutes |
+| Required secrets (JWT, Stellar, payment keys) | 0 (stored in the secrets manager with versioning) | 15 minutes |
+
+These objectives are the contract the backup and restore-drill procedures below are measured against. A drill that misses either objective is a failed drill and must be fixed before the next release.
+
+### Backup workflow
+
+- **Encrypted at rest:** every PostgreSQL dump and WAL segment is encrypted with `age` (or `gpg`) using a public recipient key before leaving the host. Plaintext backups are never written to shared storage.
+- **Access-limited:** backups are written to a dedicated bucket/prefix with least-privilege IAM — the backup writer can only `PutObject`, and only the restore role can `GetObject`. Bucket versioning and object lock are enabled so backups cannot be silently deleted or overwritten.
+- **Retention:** 35 days of daily base backups plus 7 days of WAL, matching the RPO above. Retention is enforced by lifecycle policy, not by the backup job.
+- **Independently verified:** a separate verification job (not the backup job) downloads each new backup, recomputes its SHA-256 checksum, compares it against the checksum recorded at creation time, and performs a `pg_restore --list` / `pg_verifybackup` integrity check. Verification failures page on-call and mark the backup as untrusted.
+
+### Restore-drill procedure
+
+Run this drill at least monthly and before any release that changes the schema. Retain the resulting report.
+
+1. **Provision an isolated staging target.** Use a throwaway database instance and a separate secrets scope; never restore over production.
+2. **Restore PostgreSQL.** Fetch the latest verified base backup and the WAL needed to reach the target point in time, decrypt, and restore. Record the wall-clock start and end.
+3. **Restore metadata and secrets.** Apply migrations to the restored database and load the required secrets into the staging scope from the secrets manager.
+4. **Verify integrity.** Confirm the restored database passes `pg_verifybackup`/checksum validation and that row counts for critical tables (`wallets`, `transactions`, `matches`, `tournaments`, `sessions`) match the source snapshot.
+5. **Validate the application.** Start the backend against the restored database and secrets, then check `GET /health` and `GET /ready`, run the smoke test suite, and confirm a representative read (leaderboard) and a representative write (a test match result) succeed.
+6. **Measure against objectives.** Record the measured RTO (time from drill start to a passing application validation) and the measured data loss (difference between the source's latest committed transaction and the restored point). Both must be within the objectives table above.
+7. **Safe traffic cutover (production only).** If this drill is being used for an actual recovery: put the service in maintenance mode, drain in-flight requests, point the application at the restored database, verify `/ready`, then shift traffic gradually (canary → full) while watching error rates. Roll back by repointing to the previous database if validation fails.
+8. **Retain the report.** Store the drill report (date, operator, measured RTO, measured data loss, pass/fail, and any remediation) alongside the backup records.
+
 ## Redis Failure Semantics & Recovery Policy
 
 Redis is used for **derived, rebuildable state only**. PostgreSQL (and the Stellar ledger for on-chain effects) is the single source of truth for all financial, match, session, and wallet state. No authoritative state may exist only in Redis.
@@ -124,134 +158,4 @@ backend/
 ├── tests/                # Integration and unit tests
 │   ├── common/           # Shared test utilities
 │   ├── integration/      # End-to-end integration tests
-│   └── unit/             # Unit tests for individual modules
-├── target/               # Rust build artifacts
-├── Cargo.toml           # Rust dependencies and workspace configuration
-├── Cargo.lock           # Locked dependency versions
-├── Dockerfile           # Container configuration
-├── test_ci_locally.sh   # Local CI testing script
-└── README.md            # This documentation
-```
-
-## Setup & Development
-
-### Prerequisites
-- Rust toolchain (`cargo`, `rustup`) - latest stable version
-- PostgreSQL (v13+) with sharding support
-- Redis (v6+) with Pub/Sub enabled
-- MinIO (or AWS S3) for file storage
-- Docker and Docker Compose for local development
-- Stellar CLI and SDK for blockchain integration
-- Node.js (v18+) for testing scripts
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/arenax/arenax.git
-cd backend
-
-# Install Rust dependencies
-cargo build
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Run database migrations
-./scripts/migrate.sh
-
-# Start the backend server
-cargo run
-
-# Or run with Docker Compose
-docker-compose up -d
-```
-
-### Development Commands
-
-```bash
-# Run tests
-cargo test
-
-# Run tests with coverage
-cargo test --coverage
-
-# Run integration tests
-cargo test --test integration
-
-# Run specific test module
-cargo test auth::tests
-
-# Check code formatting
-cargo fmt
-
-# Run linter
-cargo clippy
-
-# Run local CI tests
-./test_ci_locally.sh
-
-# Database operations
-sqlx migrate add -r <migration_name>
-./scripts/verify-migrations.sh
-./scripts/migrate.sh
-./scripts/migration-status.sh
-./scripts/backup-database.sh
-./scripts/rollback-last-migration.sh
-
-# Stellar integration testing
-./scripts/test_stellar.sh
-```
-
-### Environment Variables
-
-```env
-# Database
-DATABASE_URL=postgres://user:pass@localhost:5432/arenax
-BACKEND_MIGRATION_MODE=run
-REDIS_URL=redis://localhost:6379
-
-# Storage
-S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minio
-
-# ── Secrets ──────────────────────────────────────────────────────────────────
-# Every secret must be at least 32 characters long and must not be a known
-# placeholder (`supersecretkey`, `changeme`, ...). The backend refuses to start
-# otherwise. Generate real values with `openssl rand -base64 48`.
-S3_SECRET_KEY=dev-only-s3-secret-replace-me-0123456789
-
-# Payments
-PAYSTACK_SECRET=dev-only-paystack-secret-replace-me-0123456789
-FLUTTERWAVE_SECRET=dev-only-flutterwave-secret-replace-me-0123456789
-
-# Authentication
-JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789abcdef
-# Optional: dedicated refresh-token secret (falls back to JWT_SECRET when unset)
-JWT_REFRESH_SECRET=
-
-# Stellar Configuration
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org
-STELLAR_ADMIN_SECRET=dev-only-stellar-admin-secret-replace-me
-SOROBAN_CONTRACT_PRIZE=CAXXX...
-SOROBAN_CONTRACT_REPUTATION=CBXXX...
-
-# AI
-AI_MODEL_PATH=./models/anti_cheat.tflite
-```
-
-`BACKEND_MIGRATION_MODE` defaults to `run`, which applies and validates SQLx migrations during backend startup. Use `disabled` only when migrations are applied by a separate deployment step. See [MIGRATIONS.md](MIGRATIONS.md) for the full migration workflow, rollback process, and CI expectations.
-
-## Code Organization & Architecture
-
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
-
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, metrics, and observability setup
+│   └── unit/             # Unit
