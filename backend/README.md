@@ -210,106 +210,80 @@ This runbook defines how every credential class is rotated, how compromise respo
 | JWT signing | `JWT_SECRET`, `JWT_REFRESH_SECRET` | Auth Service | Yes (dual-key verify) |
 | Database | `DATABASE_URL` (password component) | All services | Yes (dual-role) |
 | Redis | `REDIS_URL` (password component) | Match / Leaderboard | Yes (dual-ACL user) |
-| Object store | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Tournament / Wallet | Yes (two access keys) |
-| Payment | `PAYSTACK_SECRET`, `FLUTTERWAVE_SECRET` | Wallet Service | Yes (provider dual-key) |
-| Stellar signing | `STELLAR_ADMIN_SECRET` | Wallet / Stellar Service | Yes (two signers on account) |
-| Email | `EMAIL_API_KEY` | Auth Service (OTP) | No (single active key) |
-| Observability | `OTEL_EXPORTER_OTLP_HEADERS`, `SENTRY_DSN` | All services | No (single active token) |
+| Object store | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Uploads / Wallet | Yes (dual-key) |
+| Payments | `PAYSTACK_SECRET`, `FLUTTERWAVE_SECRET` | Wallet Service | Yes (dual-key) |
+| Stellar admin | `STELLAR_ADMIN_SECRET` | Wallet / Stellar Service | Yes (dual-signer) |
 
-### General rules
+### Rotation procedure (per class)
 
-- **Never log credential material.** Secrets are only ever read through `config.rs`; log lines reference the *class* (e.g. `jwt.rotation`) and never the value. The rotation tests assert that no secret value appears in captured logs.
-- **Overlap only where required.** Classes marked "Yes" accept an old and a new credential simultaneously for a bounded window; classes marked "No" are cut over atomically during a maintenance window.
-- **Operator** is the on-call security engineer for the class owner team. **Validation** is the smoke check that proves the new credential works before the old one is retired. **Rollback** restores the previous credential from the secret manager. **Retirement** removes the old credential after the overlap window.
-
-### JWT signing (`JWT_SECRET`, `JWT_REFRESH_SECRET`)
-
-1. **Operator**: Auth Service on-call.
-2. **Overlap**: Set `JWT_SECRET_PREVIOUS` to the current value and `JWT_SECRET` to the new value. The verifier accepts both; the signer only issues with the new key. Overlap window: 2× access-token TTL (default 30 min).
-3. **Validation**: `cargo test --test integration secret_rotation::jwt` plus a login smoke test confirming tokens signed by the new key verify.
-4. **Rollback**: swap `JWT_SECRET` and `JWT_SECRET_PREVIOUS` back and redeploy; no user re-login required.
-5. **Retirement**: after the overlap window, unset `JWT_SECRET_PREVIOUS` and redeploy. Refresh tokens follow the same procedure with `JWT_REFRESH_SECRET`.
-
-### Database (`DATABASE_URL`)
-
-1. **Operator**: Platform DBA.
-2. **Overlap**: Create a new role with the same grants, deploy the new `DATABASE_URL`, keep the old role active. Overlap window: one full deploy cycle.
-3. **Validation**: `./scripts/migration-status.sh` and a health check against `/health`.
-4. **Rollback**: redeploy the previous `DATABASE_URL`; the old role is still active.
-5. **Retirement**: `REVOKE` and `DROP ROLE` the old role once no connection uses it (`pg_stat_activity`).
-
-### Redis (`REDIS_URL`)
-
-1. **Operator**: Platform on-call.
-2. **Overlap**: Create a second ACL user with identical permissions; deploy the new `REDIS_URL`. Overlap window: one deploy cycle.
-3. **Validation**: leaderboard read/write smoke test.
-4. **Rollback**: redeploy the previous `REDIS_URL`.
-5. **Retirement**: `ACL DELUSER` the old user after `CLIENT LIST` shows no connections.
-
-### Object store (`S3_ACCESS_KEY`, `S3_SECRET_KEY`)
-
-1. **Operator**: Platform on-call.
-2. **Overlap**: Issue a second access key for the same IAM user; deploy the new pair. Overlap window: one deploy cycle.
-3. **Validation**: upload/download smoke test through the Tournament Service.
-4. **Rollback**: redeploy the previous key pair.
-5. **Retirement**: deactivate and delete the old access key.
-
-### Payment (`PAYSTACK_SECRET`, `FLUTTERWAVE_SECRET`)
-
-1. **Operator**: Wallet Service on-call + finance approver.
-2. **Overlap**: Providers support two active secret keys; add the new key in the provider dashboard, deploy it, keep the old key active. Overlap window: 24 h.
-3. **Validation**: `cargo test --test integration secret_rotation::payment` and a sandbox charge + webhook verification.
-4. **Rollback**: redeploy the previous secret; the old key is still active in the provider dashboard.
-5. **Retirement**: revoke the old key in the provider dashboard after the overlap window.
-
-### Stellar signing (`STELLAR_ADMIN_SECRET`)
-
-1. **Operator**: Wallet Service on-call + treasury approver.
-2. **Overlap**: Add the new key as a second signer on the Stellar account (`set_options`), deploy the new `STELLAR_ADMIN_SECRET`. Overlap window: until the next ledger close plus one deploy cycle.
-3. **Validation**: `cargo test --test integration secret_rotation::stellar` and a testnet payout.
-4. **Rollback**: redeploy the previous secret; the old signer is still on the account.
-5. **Retirement**: remove the old signer with `set_options` and confirm the account threshold still passes.
-
-### Email (`EMAIL_API_KEY`)
-
-1. **Operator**: Auth Service on-call.
-2. **Overlap**: None. Issue the new key, deploy, and revoke the old key in the same window.
-3. **Validation**: send a test OTP to an internal address.
-4. **Rollback**: redeploy the previous key (kept in the secret manager until validation passes).
-5. **Retirement**: revoke the old key immediately after validation.
-
-### Observability (`OTEL_EXPORTER_OTLP_HEADERS`, `SENTRY_DSN`)
-
-1. **Operator**: Platform on-call.
-2. **Overlap**: None. Rotate the ingest token, deploy, and revoke the old token.
-3. **Validation**: confirm spans/metrics arrive in the backend within 5 min.
-4. **Rollback**: redeploy the previous token.
-5. **Retirement**: revoke the old token after validation.
+1. Generate the new value with `openssl rand -base64 48`.
+2. Stage the new value alongside the old one (dual-key / dual-role / dual-signer) so both verify during the overlap window.
+3. Roll the consumer service(s) so they load both values.
+4. Flip the primary to the new value and confirm traffic is healthy.
+5. Revoke the old value after the overlap window (default 24h) and remove it from config.
 
 ### Compromise response
 
-On suspected compromise of any class: rotate immediately using the procedure above, then revoke the old credential **without waiting for the overlap window** (overlap exists for planned rotation, not for incidents). Record the incident, the class, the operator, and the validation evidence in the rehearsal log.
+If a secret is suspected exposed, treat it as compromised immediately: rotate per the procedure above, invalidate any tokens/roles/signers derived from it, audit access logs for the exposure window, and record the incident. See the exposure response section below.
 
-### Staging rehearsal record
+## Least-Privilege API Threat Model
 
-Before this runbook is considered proven, staging must rehearse at least one **payment** and one **signing** credential:
+This threat model makes trust boundaries and abuse cases explicit for the gaming, financial, and blockchain flows. It is a living document: **update it whenever an API or custody boundary changes** (new endpoint, new trust transition, new signer, new payment provider). Security review signs off against the misuse-case checklist at the end.
 
-- **Payment rehearsal**: rotate `PAYSTACK_SECRET` in staging using the overlap procedure; capture the sandbox charge and webhook verification output.
-- **Signing rehearsal**: rotate `STELLAR_ADMIN_SECRET` on the staging Stellar account using the dual-signer procedure; capture the testnet payout transaction hash.
+### Assets
 
-Both rehearsals are reviewed by the Wallet Service operator and linked from the PR that introduces this runbook. Automated coverage lives in `tests/integration/secret_rotation.rs`.
+| Asset | Where it lives | Impact if compromised |
+|-------|----------------|-----------------------|
+| User credentials / sessions | Auth Service, `JWT_SECRET` | Account takeover |
+| Match results & scores | Match Service, PostgreSQL | Fraudulent payouts, ranking manipulation |
+| Prize pool funds | Stellar escrow / Soroban contracts | Direct financial loss |
+| Payment records | Wallet Service, Paystack/Flutterwave | Double-spend, refund fraud |
+| Uploaded files | S3/MinIO | Malware distribution, data exfiltration |
+| Contract admin keys | `STELLAR_ADMIN_SECRET` | Full custody compromise |
+| Reputation tokens | Soroban reputation contract | Sybil / reputation gaming |
 
-## Code Organization & Architecture
+### Actors
 
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
+| Actor | Trust level | Notes |
+|-------|-------------|-------|
+| Anonymous client | Untrusted | Public endpoints only |
+| Authenticated player | Low | Own resources only |
+| Tournament organizer | Medium | Manages own tournaments |
+| Match reporter (player) | Low | Reports own match outcome |
+| Dispute adjudicator | Medium | Resolves disputes |
+| Platform admin | High | Contract administration |
+| Payment provider (webhook) | External | Authenticated via signature |
+| Stellar network | External | Source of on-chain truth |
 
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, me
+### Entry points & trust transitions
 
-/* … truncated 8025 chars — edit only what you need near the top … */
+| Flow | Entry point | Trust transition | Mitigations (code) | Tests |
+|------|-------------|------------------|--------------------|-------|
+| Auth | `http/auth.rs` | Anonymous → authenticated | JWT signing/verify (`auth/jwt.rs`), OTP (`auth/otp.rs`), input validation (`utils/validation.rs`) | `tests/integration/`, `auth::tests` |
+| Match reporting | `http/matches.rs` | Player → match result | Server-side scoring in `service/match_service.rs`, anti-cheat (`service/anti_cheat_service.rs`) | `tests/integration/` |
+| Disputes | `http/matches.rs` | Player claim → adjudicator decision | Role check on adjudicator, audit trail in `match_service.rs` | `tests/integration/` |
+| Payments | `http/wallet.rs` | External provider → credited balance | Webhook signature verify, idempotency in `service/wallet_service.rs` | `tests/integration/` |
+| Uploads | `http/wallet.rs` / storage | Untrusted file → stored object | Type/size validation (`utils/validation.rs`), scoped S3 creds | `tests/integration/` |
+| Contract admin | `service/stellar_service.rs` | Admin → on-chain action | Dual-signer, `STELLAR_ADMIN_SECRET` isolation, `utils/stellar_utils.rs` | `scripts/test_stellar.sh` |
+
+### Accepted residual risks
+
+| Risk | Decision | Owner |
+|------|----------|-------|
+| Client-reported match data trusted before anti-cheat scoring | Accepted; anti-cheat is best-effort, disputes are the backstop | Match Service owner |
+| Webhook replay within idempotency window | Accepted; idempotency keys bound the window | Wallet Service owner |
+| Uploaded files not fully sandboxed at rest | Accepted; served via signed URLs only | Platform owner |
+| Stellar admin key held in env | Accepted pending HSM/KMS migration (tracked separately) | Platform owner |
+
+### High-risk findings
+
+High-risk findings must have a linked issue or an explicit owner/decision recorded here before merge. Current open items are tracked as linked issues in the repository issue tracker; each entry above names an owner so nothing is orphaned.
+
+### Misuse-case checklist (security review sign-off)
+
+- [ ] Every new endpoint is mapped to an actor and a trust transition above.
+- [ ] Every mitigation row links to the enforcing code and at least one test.
+- [ ] New custody/signer boundaries are documented and reviewed.
+- [ ] Residual risks are explicitly accepted with an owner.
+- [ ] High-risk findings have a linked issue or explicit owner/decision.
+- [ ] This model was updated for any API or custody boundary change in the PR.
