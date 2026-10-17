@@ -363,3 +363,8 @@ SOROBAN_CONTRACT_REPUTATION=CBXXX...
 - Display Stellar-based reputation and reward balances in community leaderboards.
 
 ---
+
+## Handsoff notes
+
+<!-- handsoff-issue-90 -->
+- #90: Implement privacy export and deletion workflows end to end
