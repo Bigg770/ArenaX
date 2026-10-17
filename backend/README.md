@@ -199,6 +199,106 @@ AI_MODEL_PATH=./models/anti_cheat.tflite
 
 `BACKEND_MIGRATION_MODE` defaults to `run`, which applies and validates SQLx migrations during backend startup. Use `disabled` only when migrations are applied by a separate deployment step. See [MIGRATIONS.md](MIGRATIONS.md) for the full migration workflow, rollback process, and CI expectations.
 
+## Secret Rotation Runbook
+
+This runbook defines how every credential class is rotated, how compromise response works without downtime, and who owns each step. It is the operator-facing companion to the automated rotation tests in `tests/integration/secret_rotation.rs`.
+
+### Secret inventory
+
+| Class | Env var(s) | Consumer service | Overlap required? |
+|-------|-----------|------------------|-------------------|
+| JWT signing | `JWT_SECRET`, `JWT_REFRESH_SECRET` | Auth Service | Yes (dual-key verify) |
+| Database | `DATABASE_URL` (password component) | All services | Yes (dual-role) |
+| Redis | `REDIS_URL` (password component) | Match / Leaderboard | Yes (dual-ACL user) |
+| Object store | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Tournament / Wallet | Yes (two access keys) |
+| Payment | `PAYSTACK_SECRET`, `FLUTTERWAVE_SECRET` | Wallet Service | Yes (provider dual-key) |
+| Stellar signing | `STELLAR_ADMIN_SECRET` | Wallet / Stellar Service | Yes (two signers on account) |
+| Email | `EMAIL_API_KEY` | Auth Service (OTP) | No (single active key) |
+| Observability | `OTEL_EXPORTER_OTLP_HEADERS`, `SENTRY_DSN` | All services | No (single active token) |
+
+### General rules
+
+- **Never log credential material.** Secrets are only ever read through `config.rs`; log lines reference the *class* (e.g. `jwt.rotation`) and never the value. The rotation tests assert that no secret value appears in captured logs.
+- **Overlap only where required.** Classes marked "Yes" accept an old and a new credential simultaneously for a bounded window; classes marked "No" are cut over atomically during a maintenance window.
+- **Operator** is the on-call security engineer for the class owner team. **Validation** is the smoke check that proves the new credential works before the old one is retired. **Rollback** restores the previous credential from the secret manager. **Retirement** removes the old credential after the overlap window.
+
+### JWT signing (`JWT_SECRET`, `JWT_REFRESH_SECRET`)
+
+1. **Operator**: Auth Service on-call.
+2. **Overlap**: Set `JWT_SECRET_PREVIOUS` to the current value and `JWT_SECRET` to the new value. The verifier accepts both; the signer only issues with the new key. Overlap window: 2× access-token TTL (default 30 min).
+3. **Validation**: `cargo test --test integration secret_rotation::jwt` plus a login smoke test confirming tokens signed by the new key verify.
+4. **Rollback**: swap `JWT_SECRET` and `JWT_SECRET_PREVIOUS` back and redeploy; no user re-login required.
+5. **Retirement**: after the overlap window, unset `JWT_SECRET_PREVIOUS` and redeploy. Refresh tokens follow the same procedure with `JWT_REFRESH_SECRET`.
+
+### Database (`DATABASE_URL`)
+
+1. **Operator**: Platform DBA.
+2. **Overlap**: Create a new role with the same grants, deploy the new `DATABASE_URL`, keep the old role active. Overlap window: one full deploy cycle.
+3. **Validation**: `./scripts/migration-status.sh` and a health check against `/health`.
+4. **Rollback**: redeploy the previous `DATABASE_URL`; the old role is still active.
+5. **Retirement**: `REVOKE` and `DROP ROLE` the old role once no connection uses it (`pg_stat_activity`).
+
+### Redis (`REDIS_URL`)
+
+1. **Operator**: Platform on-call.
+2. **Overlap**: Create a second ACL user with identical permissions; deploy the new `REDIS_URL`. Overlap window: one deploy cycle.
+3. **Validation**: leaderboard read/write smoke test.
+4. **Rollback**: redeploy the previous `REDIS_URL`.
+5. **Retirement**: `ACL DELUSER` the old user after `CLIENT LIST` shows no connections.
+
+### Object store (`S3_ACCESS_KEY`, `S3_SECRET_KEY`)
+
+1. **Operator**: Platform on-call.
+2. **Overlap**: Issue a second access key for the same IAM user; deploy the new pair. Overlap window: one deploy cycle.
+3. **Validation**: upload/download smoke test through the Tournament Service.
+4. **Rollback**: redeploy the previous key pair.
+5. **Retirement**: deactivate and delete the old access key.
+
+### Payment (`PAYSTACK_SECRET`, `FLUTTERWAVE_SECRET`)
+
+1. **Operator**: Wallet Service on-call + finance approver.
+2. **Overlap**: Providers support two active secret keys; add the new key in the provider dashboard, deploy it, keep the old key active. Overlap window: 24 h.
+3. **Validation**: `cargo test --test integration secret_rotation::payment` and a sandbox charge + webhook verification.
+4. **Rollback**: redeploy the previous secret; the old key is still active in the provider dashboard.
+5. **Retirement**: revoke the old key in the provider dashboard after the overlap window.
+
+### Stellar signing (`STELLAR_ADMIN_SECRET`)
+
+1. **Operator**: Wallet Service on-call + treasury approver.
+2. **Overlap**: Add the new key as a second signer on the Stellar account (`set_options`), deploy the new `STELLAR_ADMIN_SECRET`. Overlap window: until the next ledger close plus one deploy cycle.
+3. **Validation**: `cargo test --test integration secret_rotation::stellar` and a testnet payout.
+4. **Rollback**: redeploy the previous secret; the old signer is still on the account.
+5. **Retirement**: remove the old signer with `set_options` and confirm the account threshold still passes.
+
+### Email (`EMAIL_API_KEY`)
+
+1. **Operator**: Auth Service on-call.
+2. **Overlap**: None. Issue the new key, deploy, and revoke the old key in the same window.
+3. **Validation**: send a test OTP to an internal address.
+4. **Rollback**: redeploy the previous key (kept in the secret manager until validation passes).
+5. **Retirement**: revoke the old key immediately after validation.
+
+### Observability (`OTEL_EXPORTER_OTLP_HEADERS`, `SENTRY_DSN`)
+
+1. **Operator**: Platform on-call.
+2. **Overlap**: None. Rotate the ingest token, deploy, and revoke the old token.
+3. **Validation**: confirm spans/metrics arrive in the backend within 5 min.
+4. **Rollback**: redeploy the previous token.
+5. **Retirement**: revoke the old token after validation.
+
+### Compromise response
+
+On suspected compromise of any class: rotate immediately using the procedure above, then revoke the old credential **without waiting for the overlap window** (overlap exists for planned rotation, not for incidents). Record the incident, the class, the operator, and the validation evidence in the rehearsal log.
+
+### Staging rehearsal record
+
+Before this runbook is considered proven, staging must rehearse at least one **payment** and one **signing** credential:
+
+- **Payment rehearsal**: rotate `PAYSTACK_SECRET` in staging using the overlap procedure; capture the sandbox charge and webhook verification output.
+- **Signing rehearsal**: rotate `STELLAR_ADMIN_SECRET` on the staging Stellar account using the dual-signer procedure; capture the testnet payout transaction hash.
+
+Both rehearsals are reviewed by the Wallet Service operator and linked from the PR that introduces this runbook. Automated coverage lives in `tests/integration/secret_rotation.rs`.
+
 ## Code Organization & Architecture
 
 ### Module Structure
@@ -210,238 +310,6 @@ The backend follows a clean architecture pattern with clear separation of concer
 - **`lib.rs`**: Public API exports and library initialization
 - **`main.rs`**: Application entry point, server startup, and graceful shutdown
 - **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, metrics collection, and observability setup
+- **`telemetry.rs`**: Structured logging, tracing, me
 
-### Service Layer Pattern
-Each service follows a consistent pattern:
-- **HTTP Handlers** (`http/`): Request/response handling, input validation, and error mapping
-- **Service Layer** (`service/`): Business logic, data transformation, and external service integration
-- **Database Models**: Data access layer with SQLx for type-safe database operations
-
-### Error Handling Strategy
-- **Custom Error Types**: Domain-specific error types with proper HTTP status codes
-- **Error Propagation**: Proper error chaining and context preservation
-- **Logging Integration**: Structured error logging with correlation IDs
-- **Client Responses**: Consistent JSON error responses with appropriate status codes
-
-### Configuration Management
-- **Environment-based**: Different configurations for development, staging, and production
-- **Validation**: Runtime validation of required configuration values
-- **Secrets Management**: Secure handling of sensitive configuration data
-- **Hot Reloading**: Configuration updates without service restart (where applicable)
-
-## Core Services
-
-### 🔐 Auth Service
-- **Phone-based OTP**: Secure user registration and login
-- **JWT Sessions**: Token-based authentication
-- **Stellar Account Creation**: Automatic wallet setup for new users
-- **Device Fingerprinting**: Prevent multi-account abuse
-
-**Key Endpoints**:
-- `POST /auth/signup` - Register with phone number
-- `POST /auth/verify` - Verify OTP and create Stellar account
-- `GET /auth/me` - Get user profile and Stellar public key
-
-### 🏆 Tournament Service
-- **Tournament Management**: Create, update, and manage tournaments
-- **Prize Pool Management**: Stellar-based prize pool handling
-- **Entry Fee Processing**: Accept fiat and ArenaX Token payments
-- **Real-time Updates**: Live tournament status updates
-
-**Key Endpoints**:
-- `GET /tournaments` - List tournaments with Stellar prize pools
-- `POST /tournaments/:id/join` - Join tournament with payment
-- `GET /tournaments/:id` - Get tournament details
-
-### 🎮 Match Service
-- **Elo Matchmaking**: Skill-based player pairing
-- **Score Reporting**: Handle score submissions with proof
-- **Dispute System**: Manage match disputes and admin review
-- **Real-time Updates**: Live match status and results
-
-**Key Endpoints**:
-- `POST /matches/:id/report` - Submit match score
-- `POST /matches/:id/dispute` - Dispute match result
-- `GET /matches/:id` - Get match details and Stellar records
-
-### 💰 Wallet Service
-- **Payment Processing**: Handle Paystack/Flutterwave payments
-- **Stellar Integration**: Manage XLM and custom asset balances
-- **Payout Processing**: Automated prize distribution
-- **Transaction History**: Complete payment and Stellar transaction logs
-
-**Key Endpoints**:
-- `GET /wallet` - View balances and transaction history
-- `POST /wallet/deposit` - Process fiat deposits
-- `POST /wallet/payout/stellar` - Initiate Stellar payouts
-- `GET /wallet/payout/status/:tx_id` - Check payout status
-
-### 🤖 Anti-Cheat Service
-- **AI Analysis**: ML-powered cheating detection
-- **Screenshot Analysis**: Detect manipulated images
-- **Telemetry Analysis**: Identify abnormal gameplay patterns
-- **Automated Flagging**: Flag suspicious activity for review
-
-**Key Endpoints**:
-- `POST /matches/:id/analyze` - Submit telemetry for analysis
-- `GET /matches/:id/analysis` - Get anti-cheat results
-
-### 🏅 Leaderboard Service
-- **Real-time Rankings**: Live player leaderboards
-- **Reputation Tracking**: Stellar-based reputation system
-- **Periodic Updates**: Weekly/monthly leaderboard calculations
-- **Redis Caching**: High-performance leaderboard queries
-
-**Key Endpoints**:
-- `GET /leaderboard?period=weekly` - Get leaderboard with reputation
-
-## Stellar Blockchain Integration
-
-### Account Management
-- **User Accounts**: Automatic Stellar account creation
-- **Multi-signature**: Secure tournament prize pool accounts
-- **Key Management**: Encrypted secret key storage
-
-### Custom Assets
-- **ArenaX Tokens**: In-platform rewards and tournament fees
-- **Reputation Tokens**: Player fairness and skill tracking
-- **Asset Issuance**: Automated token creation and distribution
-
-### Smart Contracts (Soroban)
-- **Prize Distribution**: Automated tournament payouts
-- **Reputation Management**: Track and update player reputation
-- **Escrow Management**: Secure prize pool handling
-
-### Transaction Processing
-- **Batch Operations**: Efficient bulk transaction processing
-- **Fee Optimization**: Minimize Stellar network fees
-- **Status Tracking**: Real-time transaction monitoring
-
-## Database Schema
-
-### Core Tables
-- `users` - User profiles and Stellar account info
-- `tournaments` - Tournament data and prize pools
-- `matches` - Match records and results
-- `wallets` - Payment and Stellar balance info
-- `transactions` - Payment and Stellar transaction logs
-- `leaderboards` - Player rankings and reputation
-
-### Stellar Integration Tables
-- `stellar_accounts` - User Stellar account details
-- `stellar_transactions` - Stellar transaction records
-- `custom_assets` - ArenaX and Reputation token info
-- `prize_pools` - Tournament prize pool management
-
-## API Documentation
-
-### Authentication
-All endpoints require proper authentication unless specified otherwise.
-
-### Error Handling
-Standardized JSON error responses:
-```json
-{
-  "error": "Error message",
-  "code": 400,
-  "details": "Additional error details"
-}
-```
-
-### Rate Limiting
-- API endpoints have configurable rate limits
-- Stellar operations have separate rate limiting
-- Anti-cheat analysis has usage limits
-
-## Testing
-
-### Unit Tests
-```bash
-cargo test
-```
-
-### Integration Tests
-```bash
-cargo test --test integration
-```
-
-### Stellar Testnet Testing
-```bash
-# Test Stellar integration on testnet
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org cargo test
-```
-
-## Performance & Scalability
-
-### Database Optimization
-- **Sharding**: PostgreSQL sharded by tournament ID
-- **Connection Pooling**: Optimized database connections
-- **Indexing**: Strategic database indexes for performance
-
-### Caching Strategy
-- **Redis Caching**: Tournament data, leaderboards, user sessions
-- **TTL Management**: Appropriate cache expiration times
-- **Cache Invalidation**: Smart cache updates on data changes
-
-### Stellar Optimization
-- **Transaction Batching**: Group multiple operations
-- **Fee Management**: Optimize Stellar network fees
-- **Account Pooling**: Reuse Stellar accounts where possible
-
-## Monitoring & Observability
-
-### Metrics
-- **Prometheus**: Performance and business metrics
-- **Grafana**: Visualization and alerting
-- **Stellar Metrics**: Blockchain operation monitoring
-
-### Logging
-- **Structured Logging**: JSON-formatted logs
-- **Stellar Transactions**: Complete audit trail
-- **Error Tracking**: Comprehensive error monitoring
-
-## Security
-
-### Data Protection
-- **Encryption**: Sensitive data encryption at rest
-- **Stellar Keys**: Secure key management and storage
-- **API Security**: Rate limiting and input validation
-
-### Compliance
-- **Data Privacy**: Nigerian data protection compliance
-- **Stellar Compliance**: KYC/AML requirements
-- **Audit Logging**: Complete transaction audit trail
-
-## Deployment
-
-### Docker Deployment
-```bash
-# Build and run with Docker Compose
-docker-compose up -d
-```
-
-### Production Considerations
-- **Load Balancing**: Multiple backend instances
-- **Database Scaling**: Read replicas and sharding
-- **Stellar Network**: Mainnet vs testnet configuration
-- **Monitoring**: Production monitoring setup
-
-## Contributing
-
-1. Follow Rust coding standards (`cargo fmt`, `clippy`)
-2. Write comprehensive tests
-3. Update documentation
-4. Test Stellar integration thoroughly
-5. Ensure security best practices
-
-## Support
-
-For backend development questions:
-- Check the main ArenaX documentation
-- Review Stellar Rust SDK documentation
-- Contact the development team
-
----
-
-**Note**: This backend is designed to work with the ArenaX frontend and Stellar smart contracts. Ensure all components are properly configured for full functionality.
+/* … truncated 8025 chars — edit only what you need near the top … */
