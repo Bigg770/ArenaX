@@ -21,7 +21,7 @@ bcrypt = "0.15"
 actix = "0.13"
 actix-web-actors = "4.3"
 anyhow = "1.0"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std", "json"] }
 tracing-opentelemetry = "0.33"
