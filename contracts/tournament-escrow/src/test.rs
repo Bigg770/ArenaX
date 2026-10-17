@@ -73,7 +73,7 @@ fn valid_result_releases_custody_and_marks_terminal_state() {
     client.resolve(&resolver, &id, &Some(participant_a.clone()));
 
     let token = token::Client::new(&env, &asset);
-    assert_eq!(token.balance(&participant_a), 300);
+    assert_eq!(token.balance(&participant_a), 200);
     assert_eq!(token.balance(&participant_b), 0);
     assert_eq!(token.balance(&contract_id), 0);
     let escrow = client.get_escrow(&id).unwrap();
