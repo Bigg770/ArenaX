@@ -32,6 +32,68 @@ The ArenaX backend is a high-performance **Rust-based microservices architecture
 - **Smart Contracts**: Soroban contracts for automated operations
 - **Transaction Processing**: Prize pool management and payouts
 
+## PostgreSQL Capacity & Connection-Pool Budgets
+
+Connection exhaustion and unpredictable latency are the main scaling risks once service replicas and background workers multiply. Every process that talks to PostgreSQL must fit inside a shared, documented connection budget.
+
+### Per-process pool sizing
+
+Each backend process owns a single SQLx pool (`db.rs`). Size it explicitly rather than relying on defaults:
+
+| Process | Pool max (`DATABASE_MAX_CONNECTIONS`) | Notes |
+| --- | --- | --- |
+| API replica | 10 | One pool per replica; requests borrow for the duration of a transaction only |
+| Background worker | 5 | Worker concurrency is capped at the pool size so jobs never queue on acquisition |
+
+- `DATABASE_MIN_CONNECTIONS` (default `2`) keeps warm connections ready to absorb bursts.
+- `DATABASE_ACQUIRE_TIMEOUT_SECS` (default `5`) bounds how long a request waits for a connection before failing fast.
+- `DATABASE_IDLE_TIMEOUT_SECS` (default `600`) and `DATABASE_MAX_LIFETIME_SECS` (default `1800`) recycle idle/stale connections so they do not accumulate against `max_connections`.
+
+### Worker concurrency
+
+Background workers must never open more concurrent transactions than their pool allows. Cap worker concurrency at the worker pool size (5) so a burst of jobs cannot starve the API pool or exhaust the database.
+
+### Transaction duration
+
+Keep transactions short and scoped: acquire a connection, run the transaction, commit or roll back, and release. Never hold a connection across an `.await` on external I/O (Stellar, payments, S3). Long-running transactions inflate pool occupancy and acquisition latency; treat any transaction approaching the acquire timeout as a defect.
+
+### Connection budget & replica envelope
+
+PostgreSQL `max_connections` must cover the sum of all pools plus operational headroom for migrations, admin sessions, and failover:
+
+```
+max_connections >= (api_replicas × api_pool_max)
+                 + (worker_replicas × worker_pool_max)
+                 + headroom
+```
+
+Documented deployment envelope (leaves ~30% headroom on a `max_connections = 200` instance):
+
+| Component | Replicas | Pool max | Connections |
+| --- | --- | --- | --- |
+| API | 8 | 10 | 80 |
+| Workers | 4 | 5 | 20 |
+| Migrations / admin / failover headroom | — | — | 40 |
+| **Total** | | | **140 / 200** |
+
+Scaling replicas beyond this envelope requires raising `max_connections` (or adding a pooler such as PgBouncer) first. Update this table whenever replica counts or pool sizes change.
+
+### Observability
+
+Pool saturation and acquisition latency must be observable so overload is caught before it becomes an outage:
+
+- **Saturation**: track in-use vs. idle vs. max connections per process; alert when in-use stays above ~80% of pool max.
+- **Acquisition latency**: measure time spent waiting for a connection; alert when p95 approaches `DATABASE_ACQUIRE_TIMEOUT_SECS`.
+- **Transaction duration**: record per-transaction timing to spot slow queries holding connections.
+
+### Failing safely
+
+When the pool is saturated, acquisition times out after `DATABASE_ACQUIRE_TIMEOUT_SECS` and the request fails with a `503 Service Unavailable` (overload) response instead of hanging. Transactions are always committed or rolled back via RAII guards so a timeout or error never leaks a connection or leaves an open transaction. Clients should treat `503` as retryable with backoff.
+
+### Validation
+
+Load-test the API plus workers at the documented replica envelope (8 API + 4 worker replicas) and confirm PostgreSQL stays stable: connection count below `max_connections`, acquisition latency within budget, and no leaked or idle-in-transaction connections.
+
 ## Project Structure
 
 ```
@@ -168,6 +230,13 @@ DATABASE_URL=postgres://user:pass@localhost:5432/arenax
 BACKEND_MIGRATION_MODE=run
 REDIS_URL=redis://localhost:6379
 
+# Connection pool budget (see "PostgreSQL Capacity & Connection-Pool Budgets")
+DATABASE_MAX_CONNECTIONS=10
+DATABASE_MIN_CONNECTIONS=2
+DATABASE_ACQUIRE_TIMEOUT_SECS=5
+DATABASE_IDLE_TIMEOUT_SECS=600
+DATABASE_MAX_LIFETIME_SECS=1800
+
 # Storage
 S3_ENDPOINT=http://localhost:9000
 S3_ACCESS_KEY=minio
@@ -210,238 +279,4 @@ The backend follows a clean architecture pattern with clear separation of concer
 - **`lib.rs`**: Public API exports and library initialization
 - **`main.rs`**: Application entry point, server startup, and graceful shutdown
 - **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, metrics collection, and observability setup
-
-### Service Layer Pattern
-Each service follows a consistent pattern:
-- **HTTP Handlers** (`http/`): Request/response handling, input validation, and error mapping
-- **Service Layer** (`service/`): Business logic, data transformation, and external service integration
-- **Database Models**: Data access layer with SQLx for type-safe database operations
-
-### Error Handling Strategy
-- **Custom Error Types**: Domain-specific error types with proper HTTP status codes
-- **Error Propagation**: Proper error chaining and context preservation
-- **Logging Integration**: Structured error logging with correlation IDs
-- **Client Responses**: Consistent JSON error responses with appropriate status codes
-
-### Configuration Management
-- **Environment-based**: Different configurations for development, staging, and production
-- **Validation**: Runtime validation of required configuration values
-- **Secrets Management**: Secure handling of sensitive configuration data
-- **Hot Reloading**: Configuration updates without service restart (where applicable)
-
-## Core Services
-
-### 🔐 Auth Service
-- **Phone-based OTP**: Secure user registration and login
-- **JWT Sessions**: Token-based authentication
-- **Stellar Account Creation**: Automatic wallet setup for new users
-- **Device Fingerprinting**: Prevent multi-account abuse
-
-**Key Endpoints**:
-- `POST /auth/signup` - Register with phone number
-- `POST /auth/verify` - Verify OTP and create Stellar account
-- `GET /auth/me` - Get user profile and Stellar public key
-
-### 🏆 Tournament Service
-- **Tournament Management**: Create, update, and manage tournaments
-- **Prize Pool Management**: Stellar-based prize pool handling
-- **Entry Fee Processing**: Accept fiat and ArenaX Token payments
-- **Real-time Updates**: Live tournament status updates
-
-**Key Endpoints**:
-- `GET /tournaments` - List tournaments with Stellar prize pools
-- `POST /tournaments/:id/join` - Join tournament with payment
-- `GET /tournaments/:id` - Get tournament details
-
-### 🎮 Match Service
-- **Elo Matchmaking**: Skill-based player pairing
-- **Score Reporting**: Handle score submissions with proof
-- **Dispute System**: Manage match disputes and admin review
-- **Real-time Updates**: Live match status and results
-
-**Key Endpoints**:
-- `POST /matches/:id/report` - Submit match score
-- `POST /matches/:id/dispute` - Dispute match result
-- `GET /matches/:id` - Get match details and Stellar records
-
-### 💰 Wallet Service
-- **Payment Processing**: Handle Paystack/Flutterwave payments
-- **Stellar Integration**: Manage XLM and custom asset balances
-- **Payout Processing**: Automated prize distribution
-- **Transaction History**: Complete payment and Stellar transaction logs
-
-**Key Endpoints**:
-- `GET /wallet` - View balances and transaction history
-- `POST /wallet/deposit` - Process fiat deposits
-- `POST /wallet/payout/stellar` - Initiate Stellar payouts
-- `GET /wallet/payout/status/:tx_id` - Check payout status
-
-### 🤖 Anti-Cheat Service
-- **AI Analysis**: ML-powered cheating detection
-- **Screenshot Analysis**: Detect manipulated images
-- **Telemetry Analysis**: Identify abnormal gameplay patterns
-- **Automated Flagging**: Flag suspicious activity for review
-
-**Key Endpoints**:
-- `POST /matches/:id/analyze` - Submit telemetry for analysis
-- `GET /matches/:id/analysis` - Get anti-cheat results
-
-### 🏅 Leaderboard Service
-- **Real-time Rankings**: Live player leaderboards
-- **Reputation Tracking**: Stellar-based reputation system
-- **Periodic Updates**: Weekly/monthly leaderboard calculations
-- **Redis Caching**: High-performance leaderboard queries
-
-**Key Endpoints**:
-- `GET /leaderboard?period=weekly` - Get leaderboard with reputation
-
-## Stellar Blockchain Integration
-
-### Account Management
-- **User Accounts**: Automatic Stellar account creation
-- **Multi-signature**: Secure tournament prize pool accounts
-- **Key Management**: Encrypted secret key storage
-
-### Custom Assets
-- **ArenaX Tokens**: In-platform rewards and tournament fees
-- **Reputation Tokens**: Player fairness and skill tracking
-- **Asset Issuance**: Automated token creation and distribution
-
-### Smart Contracts (Soroban)
-- **Prize Distribution**: Automated tournament payouts
-- **Reputation Management**: Track and update player reputation
-- **Escrow Management**: Secure prize pool handling
-
-### Transaction Processing
-- **Batch Operations**: Efficient bulk transaction processing
-- **Fee Optimization**: Minimize Stellar network fees
-- **Status Tracking**: Real-time transaction monitoring
-
-## Database Schema
-
-### Core Tables
-- `users` - User profiles and Stellar account info
-- `tournaments` - Tournament data and prize pools
-- `matches` - Match records and results
-- `wallets` - Payment and Stellar balance info
-- `transactions` - Payment and Stellar transaction logs
-- `leaderboards` - Player rankings and reputation
-
-### Stellar Integration Tables
-- `stellar_accounts` - User Stellar account details
-- `stellar_transactions` - Stellar transaction records
-- `custom_assets` - ArenaX and Reputation token info
-- `prize_pools` - Tournament prize pool management
-
-## API Documentation
-
-### Authentication
-All endpoints require proper authentication unless specified otherwise.
-
-### Error Handling
-Standardized JSON error responses:
-```json
-{
-  "error": "Error message",
-  "code": 400,
-  "details": "Additional error details"
-}
-```
-
-### Rate Limiting
-- API endpoints have configurable rate limits
-- Stellar operations have separate rate limiting
-- Anti-cheat analysis has usage limits
-
-## Testing
-
-### Unit Tests
-```bash
-cargo test
-```
-
-### Integration Tests
-```bash
-cargo test --test integration
-```
-
-### Stellar Testnet Testing
-```bash
-# Test Stellar integration on testnet
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org cargo test
-```
-
-## Performance & Scalability
-
-### Database Optimization
-- **Sharding**: PostgreSQL sharded by tournament ID
-- **Connection Pooling**: Optimized database connections
-- **Indexing**: Strategic database indexes for performance
-
-### Caching Strategy
-- **Redis Caching**: Tournament data, leaderboards, user sessions
-- **TTL Management**: Appropriate cache expiration times
-- **Cache Invalidation**: Smart cache updates on data changes
-
-### Stellar Optimization
-- **Transaction Batching**: Group multiple operations
-- **Fee Management**: Optimize Stellar network fees
-- **Account Pooling**: Reuse Stellar accounts where possible
-
-## Monitoring & Observability
-
-### Metrics
-- **Prometheus**: Performance and business metrics
-- **Grafana**: Visualization and alerting
-- **Stellar Metrics**: Blockchain operation monitoring
-
-### Logging
-- **Structured Logging**: JSON-formatted logs
-- **Stellar Transactions**: Complete audit trail
-- **Error Tracking**: Comprehensive error monitoring
-
-## Security
-
-### Data Protection
-- **Encryption**: Sensitive data encryption at rest
-- **Stellar Keys**: Secure key management and storage
-- **API Security**: Rate limiting and input validation
-
-### Compliance
-- **Data Privacy**: Nigerian data protection compliance
-- **Stellar Compliance**: KYC/AML requirements
-- **Audit Logging**: Complete transaction audit trail
-
-## Deployment
-
-### Docker Deployment
-```bash
-# Build and run with Docker Compose
-docker-compose up -d
-```
-
-### Production Considerations
-- **Load Balancing**: Multiple backend instances
-- **Database Scaling**: Read replicas and sharding
-- **Stellar Network**: Mainnet vs testnet configuration
-- **Monitoring**: Production monitoring setup
-
-## Contributing
-
-1. Follow Rust coding standards (`cargo fmt`, `clippy`)
-2. Write comprehensive tests
-3. Update documentation
-4. Test Stellar integration thoroughly
-5. Ensure security best practices
-
-## Support
-
-For backend development questions:
-- Check the main ArenaX documentation
-- Review Stellar Rust SDK documentation
-- Contact the development team
-
----
-
-**Note**: This backend is designed to work with the ArenaX frontend and Stellar smart contracts. Ensure all components are properly configured for full functionality.
+- **`telemetry.rs`**: Structured logging, tracing, me
