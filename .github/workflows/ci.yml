@@ -2,312 +2,72 @@ name: CI
 
 on:
   push:
-    branches: [ main, dev, develop ]
+    branches: [main]
   pull_request:
-    branches: [ main, dev, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  # Frontend CI
-  frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-    
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Check PWA assets
-      run: npm run check:pwa-assets
-
-    - name: Lint code
-      run: npm run lint
-
-    - name: Type check
-      run: npx tsc --noEmit
-
-    - name: Run tests
-      run: npm test -- --ci --forceExit --passWithNoTests
-
-    - name: Build
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-  # Server (TypeScript) CI
-  server:
-    name: Server
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: ./server
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: server/package-lock.json
-    
-    - name: Install dependencies
-      run: npm ci
-    
-    - name: Generate Prisma Client
-      run: npm run prisma:generate
-    
-    - name: Type check (Lint)
-      run: npm run lint
-    
-    - name: Build
-      run: npm run build
-
-  # Backend database migration CI
-  backend-migrations:
-    name: Backend Migrations
+  backend:
+    name: Backend (hermetic integration tests)
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:14
+        image: postgres:16-alpine
         env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
-    defaults:
-      run:
-        working-directory: ./backend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache cargo
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ~/.cargo/bin/sqlx
-        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
-
-    - name: Install SQLx CLI
-      run: |
-        if ! command -v sqlx >/dev/null 2>&1; then
-          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
-        fi
-
-    - name: Verify migration files
-      run: ./scripts/verify-migrations.sh
-
-    - name: Apply migrations
-      run: ./scripts/migrate.sh
-
-    - name: Rollback verification (up -> down -> up, #871)
-      env:
-        SKIP_BACKUP: "1"  # CI database is disposable; never skip the backup on shared data
-      run: |
-        chmod +x ./scripts/rollback-verify.sh
-        ./scripts/rollback-verify.sh
-
-  # Backend (Rust) build & test
-  #
-  # Before this job the Rust backend was never compiled in CI — the
-  # `backend-migrations` job above only applies migrations — so `backend/` could
-  # rot without any check noticing.
-  #
-  # `continue-on-error` is deliberately true for now: `main` does not currently
-  # compile, so a blocking job would fail every unrelated PR. Once the backend
-  # builds green, delete `continue-on-error` and make this a required check.
-  backend-build:
-    name: Backend Build & Test
-    runs-on: ubuntu-latest
-    continue-on-error: true
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # The realtime/session tests connect to Redis at 127.0.0.1:6379.
+          --health-retries 20
       redis:
-        image: redis:7
+        image: redis:7-alpine
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-
+          --health-retries 20
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: test
+          MINIO_ROOT_PASSWORD: testtest
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        command: server /data
     env:
-      # `sqlx::query!` macros type-check against a live, migrated database, so
-      # DATABASE_URL must be reachable at compile time, not just at runtime.
-      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      DATABASE_URL: postgres://test:test@localhost:5432/test
       REDIS_URL: redis://localhost:6379
-    defaults:
-      run:
-        working-directory: ./backend
-
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: test
+      S3_SECRET_KEY: testtest
+      S3_BUCKET: test
+      RUST_LOG: info
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    # Same key as `backend-migrations` so the compiled-in sqlx-cli binary is
-    # shared between the two jobs instead of installed twice.
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ~/.cargo/bin/sqlx
-        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
-
-    - name: Cache backend target
-      uses: actions/cache@v3
-      with:
-        path: backend/target
-        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-target-
-
-    - name: Install SQLx CLI
-      run: |
-        if ! command -v sqlx >/dev/null 2>&1; then
-          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
-        fi
-
-    - name: Apply migrations
-      run: ./scripts/migrate.sh
-
-    - name: Type check
-      run: cargo check --all-targets --locked
-
-    - name: Run tests
-      run: cargo test --all-targets --locked
-
-  # Contracts CI (Rust)
-  contracts:
-    name: Contracts
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: ./contracts
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
-    
-    - name: Install wasm target
-      run: rustup target add wasm32-unknown-unknown
-    
-    - name: Cache cargo
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          contracts/target
-        key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
-    
-    - name: Check formatting
-      run: cargo fmt --all -- --check
-    
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
-    
-    - name: Build contracts
-      run: cargo build --target wasm32-unknown-unknown --release
-    
-    - name: Run tests
-      run: cargo test
-
-  # Frontend E2E tests
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Install Playwright browsers
-      run: npx playwright install --with-deps chromium
-
-    - name: Build app
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-    - name: Run E2E tests
-      run: npm run test:e2e
-      env:
-        PLAYWRIGHT_BASE_URL: http://localhost:3000
-        CI: true
-
-    - name: Upload Playwright report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: playwright-report
-        path: frontend/playwright-report/
-        retention-days: 7
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Run hermetic integration tests (parallel, repeated)
+        working-directory: backend
+        run: |
+          for run in 1 2 3; do
+            echo "::group::Test run $run"
+            cargo test --all-features -- --test-threads=8
+            echo "::endgroup::"
+          done

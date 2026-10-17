@@ -32,6 +32,53 @@ The ArenaX backend is a high-performance **Rust-based microservices architecture
 - **Smart Contracts**: Soroban contracts for automated operations
 - **Transaction Processing**: Prize pool management and payouts
 
+## Hermetic Integration Tests
+
+Backend integration tests are **hermetic**: they never depend on a developer-local
+database, Redis instance, or live provider. Every test provisions its own isolated
+state and tears it down even when it fails, so the suite is reproducible on a clean CI
+worker and safe to run in parallel.
+
+### Shared fixtures
+
+Shared fixtures live in `backend/tests/common/` and are pulled in with
+`mod common;`. They provide:
+
+- **`TestDb`** — a real PostgreSQL database (via `sqlx`/`testcontainers`) with a
+  **unique schema per test** (`test_<uuid>`). The schema is dropped on `Drop`, so
+  cleanup runs on success, panic, or early return. Database semantics stay real —
+  the DB is never mocked.
+- **`TestRedis`** — a real Redis container with a **unique key namespace per test**
+  (`test:<uuid>:`). Keys are flushed on `Drop`; no fixed keys or shared DB index.
+- **`TestStorage`** — an S3/MinIO container with a **unique bucket per test**
+  (`test-<uuid>`), removed on `Drop`.
+- **`MockProviders`** — external providers (Stellar Horizon, Paystack, Flutterwave)
+  are mocked at the HTTP boundary with `wiremock`, so no network egress occurs while
+  the service code under test runs unmodified.
+
+### Rules for hermetic tests
+
+1. **Unique state per test.** Never reuse a schema, bucket, Redis key, or fixed ID.
+   Derive identifiers from the fixture's per-test UUID.
+2. **Clean up on failure.** Use the RAII fixtures (`TestDb`, `TestRedis`,
+   `TestStorage`) rather than manual setup/teardown so cleanup runs on panic.
+3. **No shared global state.** Do not mutate process-wide statics, environment
+   variables, or a shared connection pool between tests. Pass fixtures explicitly.
+4. **Mock only at the boundary.** Mock external providers (Horizon, payment
+   gateways) with `MockProviders`; keep PostgreSQL, Redis, and object storage real.
+5. **Order independence.** Tests must pass in any order and under
+   `cargo test -- --test-threads=<n>`; if a test needs ordering, it is a bug.
+
+### Running the suite
+
+```bash
+# Requires a Docker daemon for testcontainers.
+cargo test --all-features -- --test-threads=8
+```
+
+Run the suite repeatedly on a clean CI worker to confirm hermeticity; a passing run
+must not leave schemas, buckets, or Redis keys behind.
+
 ## Service SLOs, Alerts & Runbooks
 
 Operational targets are tied to player-impacting workflows rather than generic health
@@ -137,159 +184,6 @@ backend/
 │   │   ├── tournaments.rs # Tournament management endpoints
 │   │   ├── matches.rs     # Match and matchmaking endpoints
 │   │   ├── wallet.rs      # Payment and Stellar integration endpoints
-│   │   ├── leaderboard.rs # Rankings and reputation endpoints
-│   │   └── health.rs      # Health check and monitoring endpoints
-│   ├── service/           # Business logic and service layer
-│   │   ├── mod.rs         # Service module exports
-│   │   ├── auth_service.rs    # Authentication business logic
-│   │   ├── tournament_service.rs # Tournament management logic
-│   │   ├── match_service.rs     # Match and matchmaking logic
-│   │   ├── wallet_service.rs    # Payment processing logic
-│   │   ├── anti_cheat_service.rs # AI-powered cheating detection
-│   │   ├── leaderboard_service.rs # Rankings and reputation logic
-│   │   └── stellar_service.rs   # Stellar blockchain integration
-│   └── utils/             # Shared utilities and helper functions
-│       ├── mod.rs         # Utils module exports
-│       ├── crypto.rs      # Cryptographic utilities
-│       ├── validation.rs  # Input validation helpers
-│       ├── stellar_utils.rs # Stellar-specific utilities
-│       └── constants.rs   # Application constants
-├── migrations/            # Database migrations (SQLx)
-├── scripts/              # Deployment and utility scripts
-│   ├── deploy.sh         # Production deployment script
-│   ├── migrate.sh        # Database migration script
-│   └── test_stellar.sh   # Stellar integration testing
-├── tests/                # Integration and unit tests
-│   ├── common/           # Shared test utilities
-│   ├── integration/      # End-to-end integration tests
-│   └── unit/             # Unit tests for individual modules
-├── target/               # Rust build artifacts
-├── Cargo.toml           # Rust dependencies and workspace configuration
-├── Cargo.lock           # Locked dependency versions
-├── Dockerfile           # Container configuration
-├── test_ci_locally.sh   # Local CI testing script
-└── README.md            # This documentation
-```
+│   │   ├── lead
 
-## Setup & Development
-
-### Prerequisites
-- Rust toolchain (`cargo`, `rustup`) - latest stable version
-- PostgreSQL (v13+) with sharding support
-- Redis (v6+) with Pub/Sub enabled
-- MinIO (or AWS S3) for file storage
-- Docker and Docker Compose for local development
-- Stellar CLI and SDK for blockchain integration
-- Node.js (v18+) for testing scripts
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/arenax/arenax.git
-cd backend
-
-# Install Rust dependencies
-cargo build
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Run database migrations
-./scripts/migrate.sh
-
-# Start the backend server
-cargo run
-
-# Or run with Docker Compose
-docker-compose up -d
-```
-
-### Development Commands
-
-```bash
-# Run tests
-cargo test
-
-# Run tests with coverage
-cargo test --coverage
-
-# Run integration tests
-cargo test --test integration
-
-# Run specific test module
-cargo test auth::tests
-
-# Check code formatting
-cargo fmt
-
-# Run linter
-cargo clippy
-
-# Run local CI tests
-./test_ci_locally.sh
-
-# Database operations
-sqlx migrate add -r <migration_name>
-./scripts/verify-migrations.sh
-./scripts/migrate.sh
-./scripts/migration-status.sh
-./scripts/backup-database.sh
-./scripts/rollback-last-migration.sh
-
-# Stellar integration testing
-./scripts/test_stellar.sh
-```
-
-### Environment Variables
-
-```env
-# Database
-DATABASE_URL=postgres://user:pass@localhost:5432/arenax
-BACKEND_MIGRATION_MODE=run
-REDIS_URL=redis://localhost:6379
-
-# Storage
-S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minio
-
-# ── Secrets ──────────────────────────────────────────────────────────────────
-# Every secret must be at least 32 characters long and must not be a known
-# placeholder (`supersecretkey`, `changeme`, ...). The backend refuses to start
-# otherwise. Generate real values with `openssl rand -base64 48`.
-S3_SECRET_KEY=dev-only-s3-secret-replace-me-0123456789
-
-# Payments
-PAYSTACK_SECRET=dev-only-paystack-secret-replace-me-0123456789
-FLUTTERWAVE_SECRET=dev-only-flutterwave-secret-replace-me-0123456789
-
-# Authentication
-JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789abcdef
-# Optional: dedicated refresh-token secret (falls back to JWT_SECRET when unset)
-JWT_REFRESH_SECRET=
-
-# Stellar Configuration
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org
-STELLAR_ADMIN_SECRET=dev-only-stellar-admin-secret-replace-me
-SOROBAN_CONTRACT_PRIZE=CAXXX...
-SOROBAN_CONTRACT_REPUTATION=CBXXX...
-
-# AI
-AI_MODEL_PATH=./models/anti_cheat.tflite
-```
-
-`BACKEND_MIGRATION_MODE` defaults to `run`, which applies and validates SQLx migrations during backend startup. Use `disabled` only when migrations are applied by a separate deployment step. See [MIGRATIONS.md](MIGRATIONS.md) for the full migration workflow, rollback process, and CI expectations.
-
-## Code Organization & Architecture
-
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
-
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, metrics, and observability setup
+/* … truncated 5375 chars — edit only what you need near the top … */

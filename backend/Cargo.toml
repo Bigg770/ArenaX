@@ -58,3 +58,9 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
+# Hermetic integration test fixtures (#101): ephemeral Postgres/Redis/object-storage
+# containers plus provider-client mocking at the boundary.
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres", "redis", "minio"] }
+wiremock = "0.6"
+serial_test = "3.1"
