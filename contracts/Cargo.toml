@@ -22,6 +22,7 @@ members = [
     "zk-proof",
     "airdrop",
     "event-manager",
+    "tournament-escrow",
     "treasury",
     "upgrade-manager",
     "upgrade-system",
