@@ -165,6 +165,8 @@ pub enum DataKey {
     Balance,
     /// Address of the AX token contract used for real on-chain transfers (#918).
     TokenAddress,
+    AllowedAsset(Address),
+    MaxOperationAmount,
     SpendingProposalCounter,
     SpendingProposal(u64),
     AllocationProposalCounter,
@@ -217,6 +219,7 @@ impl Treasury {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
+        admin.require_auth();
         if signers.is_empty() {
             panic!("at least one signer required");
         }
@@ -224,8 +227,12 @@ impl Treasury {
             panic!("invalid threshold");
         }
 
+        let configured_token = token_address.unwrap_or(token);
+
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage()
+            .instance()
+            .set(&DataKey::Token, &configured_token);
         env.storage().instance().set(&DataKey::Signers, &signers);
         env.storage()
             .instance()
@@ -251,11 +258,15 @@ impl Treasury {
             .set(&DataKey::TotalAllocated, &0i128);
         env.storage().instance().set(&DataKey::TotalSpent, &0i128);
         env.storage().instance().set(&DataKey::Paused, &false);
-
-        // Store the token address if provided (#918: real on-chain transfers)
-        if let Some(token) = token_address {
-            env.storage().instance().set(&DataKey::TokenAddress, &token);
-        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenAddress, &configured_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedAsset(configured_token.clone()), &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOperationAmount, &i128::MAX);
 
         env.events().publish(
             (Symbol::new(&env, "Treasury"), Symbol::new(&env, "INIT")),
@@ -267,9 +278,34 @@ impl Treasury {
     /// Admin-only (#918).
     pub fn set_token_address(env: Env, caller: Address, token_address: Address) {
         Self::require_admin(&env, &caller);
+        if Self::get_balance(env.clone()) != 0
+            || env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::SpendingProposalCounter)
+                .unwrap_or(0)
+                != 0
+        {
+            panic!("token cannot change after treasury activity");
+        }
+        let old_token = Self::token(&env);
+        let old_token_balance = token::Client::new(&env, &old_token)
+            .balance(&env.current_contract_address());
+        if old_token_balance != 0 {
+            panic!("token cannot change while assets are held");
+        }
         env.storage()
             .instance()
             .set(&DataKey::TokenAddress, &token_address);
+        env.storage()
+            .instance()
+            .set(&DataKey::Token, &token_address);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedAsset(old_token), &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedAsset(token_address.clone()), &true);
         env.events().publish(
             (
                 Symbol::new(&env, "Treasury"),
@@ -282,6 +318,37 @@ impl Treasury {
     /// Return the configured token address, or `None` if not set.
     pub fn get_token_address(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::TokenAddress)
+    }
+
+    pub fn is_asset_allowed(env: Env, asset: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowedAsset(asset))
+            .unwrap_or(false)
+    }
+
+    pub fn set_operation_cap(env: Env, caller: Address, amount: i128) {
+        Self::require_admin(&env, &caller);
+        if amount <= 0 {
+            panic!("operation cap must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOperationAmount, &amount);
+        env.events().publish(
+            (
+                Symbol::new(&env, "Treasury"),
+                Symbol::new(&env, "OP_CAP"),
+            ),
+            (caller, amount),
+        );
+    }
+
+    pub fn get_operation_cap(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxOperationAmount)
+            .unwrap_or(i128::MAX)
     }
 
     // -----------------------------------------------------------------
@@ -297,11 +364,7 @@ impl Treasury {
         if amount <= 0 {
             panic!("amount must be positive");
         }
-        let token_id: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Token)
-            .expect("not initialized");
+        let token_id = Self::token(&env);
         token::Client::new(&env, &token_id).transfer(
             &from,
             env.current_contract_address(),
@@ -457,6 +520,9 @@ impl Treasury {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        if amount > Self::get_operation_cap(env.clone()) {
+            panic!("exceeds per-operation cap");
+        }
 
         let mut counter: u64 = env
             .storage()
@@ -609,6 +675,9 @@ impl Treasury {
         }
         if proposal.cancelled {
             panic!("proposal cancelled");
+        }
+        if proposal.amount > Self::get_operation_cap(env.clone()) {
+            panic!("exceeds per-operation cap");
         }
 
         let threshold = Self::get_threshold(env.clone());

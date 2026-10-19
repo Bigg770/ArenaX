@@ -33,6 +33,9 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token, Address, Bytes, BytesN, Env, Vec,
 };
 
+const MAX_BATCH_CLAIMS: u32 = 32;
+const MAX_PROOF_DEPTH: u32 = 32;
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -202,6 +205,9 @@ impl AirdropContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        if proof.len() > MAX_PROOF_DEPTH {
+            panic!("merkle proof too deep");
+        }
         Self::require_snapshot_amount(&env, amount);
 
         // Check nullifier — prevent double-claiming
@@ -228,7 +234,10 @@ impl AirdropContract {
             .get(&DataKey::ClaimedAmount)
             .unwrap_or(0);
         let total: i128 = env.storage().instance().get(&DataKey::TotalAmount).unwrap();
-        if claimed + amount > total {
+        let new_claimed = claimed
+            .checked_add(amount)
+            .expect("claimed amount overflow");
+        if new_claimed > total {
             panic!("insufficient airdrop balance");
         }
 
@@ -240,7 +249,7 @@ impl AirdropContract {
         // Update claimed counter
         env.storage()
             .instance()
-            .set(&DataKey::ClaimedAmount, &(claimed + amount));
+            .set(&DataKey::ClaimedAmount, &new_claimed);
 
         // Transfer tokens
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
@@ -283,7 +292,7 @@ impl AirdropContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
-        if proof.len() > 32 {
+        if proof.len() > MAX_PROOF_DEPTH {
             panic!("merkle proof too deep");
         }
         Self::require_snapshot_amount(&env, amount);
@@ -309,7 +318,10 @@ impl AirdropContract {
             .get(&DataKey::ClaimedAmount)
             .unwrap_or(0);
         let total: i128 = env.storage().instance().get(&DataKey::TotalAmount).unwrap();
-        if claimed + amount > total {
+        let new_claimed = claimed
+            .checked_add(amount)
+            .expect("claimed amount overflow");
+        if new_claimed > total {
             panic!("insufficient airdrop balance");
         }
 
@@ -318,7 +330,7 @@ impl AirdropContract {
             .set(&DataKey::Claimed(claimant.clone()), &true);
         env.storage()
             .instance()
-            .set(&DataKey::ClaimedAmount, &(claimed + amount));
+            .set(&DataKey::ClaimedAmount, &new_claimed);
 
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let contract_addr = env.current_contract_address();
@@ -345,6 +357,9 @@ impl AirdropContract {
     ) -> Vec<ClaimResult> {
         Self::require_not_paused(&env);
         Self::require_not_expired(&env);
+        if entries.is_empty() || entries.len() > MAX_BATCH_CLAIMS {
+            panic!("batch claim count out of range");
+        }
 
         let root: BytesN<32> = env.storage().instance().get(&DataKey::MerkleRoot).unwrap();
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
@@ -370,6 +385,10 @@ impl AirdropContract {
             if amount <= 0 {
                 panic!("amount must be positive");
             }
+            if proof.len() > MAX_PROOF_DEPTH {
+                panic!("merkle proof too deep");
+            }
+            Self::require_snapshot_amount(&env, amount);
             if env
                 .storage()
                 .persistent()
@@ -384,15 +403,16 @@ impl AirdropContract {
                 panic!("invalid merkle proof");
             }
 
-            if claimed_total + amount > total {
+            claimed_total = claimed_total
+                .checked_add(amount)
+                .expect("claimed amount overflow");
+            if claimed_total > total {
                 panic!("insufficient airdrop balance");
             }
 
             env.storage()
                 .persistent()
                 .set(&DataKey::Claimed(claimant.clone()), &true);
-            claimed_total += amount;
-
             client.transfer(&contract_addr, &claimant, &amount);
 
             env.events()
@@ -459,16 +479,30 @@ impl AirdropContract {
             panic!("additional_amount cannot be negative");
         }
 
+        let total: i128 = env.storage().instance().get(&DataKey::TotalAmount).unwrap();
+        let new_total = total
+            .checked_add(additional_amount)
+            .expect("airdrop budget overflow");
+        let claimed: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimedAmount)
+            .unwrap_or(0);
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let funded_and_claimed = token::Client::new(&env, &token)
+            .balance(&env.current_contract_address())
+            .checked_add(claimed)
+            .expect("airdrop funding overflow");
+        if new_total > funded_and_claimed {
+            panic!("additional budget is not funded");
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::MerkleRoot, &new_root);
-
-        if additional_amount > 0 {
-            let total: i128 = env.storage().instance().get(&DataKey::TotalAmount).unwrap();
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalAmount, &(total + additional_amount));
-        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAmount, &new_total);
 
         env.events()
             .publish((symbol_short!("ROOT_UPD"),), (new_root, additional_amount));
