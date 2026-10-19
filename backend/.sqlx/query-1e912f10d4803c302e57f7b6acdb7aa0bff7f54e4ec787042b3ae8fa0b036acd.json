@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO idempotency_configs (id, route_pattern, enabled, ttl_seconds, max_response_size_kb, created_at, updated_at)\n                VALUES ($1, $2, $3, $4, $5, $6, $7)\n                ON CONFLICT (route_pattern) \n                DO UPDATE SET \n                enabled = EXCLUDED.enabled,\n                ttl_seconds = EXCLUDED.ttl_seconds,\n                max_response_size_kb = EXCLUDED.max_response_size_kb,\n                updated_at = EXCLUDED.updated_at\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool",
+        "Int4",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1e912f10d4803c302e57f7b6acdb7aa0bff7f54e4ec787042b3ae8fa0b036acd"
+}

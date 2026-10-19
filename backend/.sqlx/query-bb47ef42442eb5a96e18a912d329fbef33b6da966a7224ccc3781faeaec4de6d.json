@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, user_id, game, match_id, rating_before, rating_after,\n                   rating_change, opponent_id, opponent_rating, result, created_at\n            FROM elo_history\n            WHERE user_id = $1 AND game = $2 AND created_at BETWEEN $3 AND $4\n            ORDER BY created_at ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "match_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "rating_before",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "rating_change",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "opponent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "opponent_rating",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "result",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "bb47ef42442eb5a96e18a912d329fbef33b6da966a7224ccc3781faeaec4de6d"
+}

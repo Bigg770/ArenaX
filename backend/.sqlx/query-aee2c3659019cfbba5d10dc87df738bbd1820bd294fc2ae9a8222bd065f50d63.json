@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO staking_events (id, user_id, event_type, amount, created_at)\n            VALUES ($1, $2, 'unstake', 0, NOW())\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aee2c3659019cfbba5d10dc87df738bbd1820bd294fc2ae9a8222bd065f50d63"
+}

@@ -222,6 +222,9 @@ jobs:
     - name: Apply migrations
       run: ./scripts/migrate.sh
 
+    - name: Check SQLx offline metadata
+      run: cargo sqlx prepare --check -- --all-targets
+
     - name: Type check
       run: cargo check --all-targets --locked
 

@@ -250,6 +250,41 @@ sqlx migrate add -r <migration_name>
 ./scripts/test_stellar.sh
 ```
 
+### SQLx Offline Compilation & Query Metadata Workflow
+
+ArenaX supports SQLx offline mode so developers and CI can build the backend targets without needing a live, persistent PostgreSQL database.
+
+#### 1. Building in Offline Mode
+To compile the backend without connecting to a database:
+```bash
+# Enable offline mode using the committed .sqlx query metadata
+SQLX_OFFLINE=true cargo check --all-targets --locked
+```
+
+#### 2. Generating & Updating Query Metadata
+Whenever you write new queries, edit existing `sqlx::query!` / `sqlx::query_as!` macros, or add/alter database migrations:
+1. Ensure your local PostgreSQL service is running and migrations are applied:
+   ```bash
+   export DATABASE_URL="postgres://arenax:arenax@localhost:5432/arenax_ci"
+   ./scripts/migrate.sh
+   ```
+2. Generate reproducible query metadata across all targets:
+   ```bash
+   cargo sqlx prepare -- --all-targets
+   ```
+3. Commit the updated query metadata files in the `.sqlx/` directory to version control.
+
+#### 3. CI Detection of Stale or Missing Metadata
+CI validates that committed query metadata exactly matches the real migration schema:
+```bash
+cargo sqlx prepare --check -- --all-targets
+```
+If a query macro has changed without updating `.sqlx/`, or if metadata is missing, this check will fail CI with actionable errors identifying the out-of-sync queries.
+
+#### 4. When Online Database Validation is Still Required
+- **Schema & Query Changes**: Modifying table definitions, adding migrations, or writing new SQL queries **must** be validated against a live database using `cargo sqlx prepare -- --all-targets` or online `cargo check`. Offline mode only replays previously validated query signatures.
+- **Runtime Testing**: Running integration tests (`cargo test`) that execute database transactions requires a real PostgreSQL database instance.
+
 ### Environment Variables
 
 ```env

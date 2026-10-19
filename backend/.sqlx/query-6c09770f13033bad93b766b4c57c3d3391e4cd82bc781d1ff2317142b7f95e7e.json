@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE tournament_rounds\n                    SET status = $1, started_at = $2\n                    WHERE id = (\n                        SELECT id FROM tournament_rounds\n                        WHERE tournament_id = $3 AND status = $4\n                        ORDER BY round_number ASC\n                        LIMIT 1\n                    )\n                    RETURNING id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6c09770f13033bad93b766b4c57c3d3391e4cd82bc781d1ff2317142b7f95e7e"
+}
