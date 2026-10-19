@@ -345,9 +345,14 @@ impl StakingManager {
             .instance()
             .get(&DataKey::RewardPool)
             .unwrap_or(0);
+        let new_pool = pool.checked_add(amount).expect("reward pool overflow");
         env.storage()
             .instance()
-            .set(&DataKey::RewardPool, &(pool + amount));
+            .set(&DataKey::RewardPool, &new_pool);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("POOL_FUND"), funder),
+            (amount, new_pool),
+        );
     }
 
     // ── Reward Staking ───────────────────────────────────────────────────────

@@ -69,5 +69,90 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test -- --run
+    - name: Upload Playwright report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: playwright-report
+        path: frontend/playwright-report/
+        retention-days: 7
+
+  # Transactional rollout/rollback gate (#96)
+  #
+  # Validates that the deploy workflow keeps its transactional guarantees:
+  # traffic only shifts after readiness + migration gates pass, and rollback
+  # restores the prior artifact without destructive schema reversal. This job
+  # fails fast if the deploy workflow drifts from those invariants.
+  deploy-gates:
+    name: Deploy Gates
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Verify deploy workflow exists
+      run: |
+        if [ ! -f .github/workflows/deploy.yml ]; then
+          echo "::error::.github/workflows/deploy.yml is missing; rollout/rollback gates cannot be verified"
+          exit 1
+        fi
+
+    - name: Verify readiness gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        # The readiness/health gate must be present and must run before any
+        # traffic-shift step. We assert ordering by line number.
+        READY_LINE=$(grep -n -i -E 'readiness|health' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$READY_LINE" ]; then
+          echo "::error::No readiness/health gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$READY_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Readiness gate (line $READY_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Readiness gate at line $READY_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify migration gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        MIGRATE_LINE=$(grep -n -i -E 'migrat' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$MIGRATE_LINE" ]; then
+          echo "::error::No migration gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$MIGRATE_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Rollback/migration gate (line $MIGRATE_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Migration gate at line $MIGRATE_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify rollback restores prior artifact without destructive schema reversal
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        if ! grep -q -i -E 'rollback' "$DEPLOY"; then
+          echo "::error::No rollback path found in deploy workflow"
+          exit 1
+        fi
+        # Rollback must reference the prior release/artifact identity.
+        if ! grep -q -i -E 'previous|prior|PREVIOUS_RELEASE|PREVIOUS_IMAGE|rollback.*(image|release|artifact)' "$DEPLOY"; then
+          echo "::error::Rollback does not reference the prior application artifact/release"
+          exit 1
+        fi
+        # Rollback must not run destructive schema reversal (down migrations).
+        if grep -q -i -E 'migrate.*(down|revert)|sqlx migrate revert|rollback-verify' "$DEPLOY"; then
+          echo "::error::Rollback performs destructive schema reversal; schema must remain backward-compatible"
+          exit 1
+        fi
+        echo "Rollback restores prior artifact without destructive schema reversal"

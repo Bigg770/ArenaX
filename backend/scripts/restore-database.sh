@@ -5,11 +5,21 @@
 #   ./scripts/restore-database.sh <path-to-dump>          # restore a local dump
 #   ./scripts/restore-database.sh --latest                # fetch+restore the newest S3 backup
 #   ./scripts/restore-database.sh --latest --dry-run       # download + verify checksum only
+#   ./scripts/restore-database.sh <path-to-dump> --disposable
+#                                                        # restore a local dump into the
+#                                                        # disposable database used by the
+#                                                        # migration harness (no S3 access)
 #
 # Env:
 #   DATABASE_URL       (required) target Postgres connection string to restore INTO
+#   DISPOSABLE_DATABASE_URL
+#                      (required for --disposable) connection string for the disposable
+#                      database created by verify-migrations.sh; used instead of
+#                      DATABASE_URL so the failure-injection mode can restore the
+#                      pre-migration snapshot without touching real data
 #   BACKUP_DIR          (default ./backups) local staging directory
 #   S3_BACKUP_BUCKET     (required for --latest)
+=======
 #
 # This performs point-in-time-adjacent recovery to "as of the chosen
 # backup". For true point-in-time recovery to an arbitrary timestamp
@@ -28,18 +38,33 @@ backup_dir="${BACKUP_DIR:-./backups}"
 mkdir -p "$backup_dir"
 
 dry_run=false
+disposable=false
 target=""
 for arg in "$@"; do
   case "$arg" in
     --latest) target="--latest" ;;
     --dry-run) dry_run=true ;;
+    --disposable) disposable=true ;;
     *) target="$arg" ;;
   esac
 done
 
 if [ -z "$target" ]; then
-  echo "Usage: $0 <path-to-dump>|--latest [--dry-run]" >&2
+  echo "Usage: $0 <path-to-dump>|--latest [--dry-run] [--disposable]" >&2
   exit 1
+fi
+
+if [ "$disposable" = true ]; then
+  if [ "$target" = "--latest" ]; then
+    echo "--disposable cannot be combined with --latest; pass a local snapshot path." >&2
+    exit 1
+  fi
+  if [ -z "${DISPOSABLE_DATABASE_URL:-}" ]; then
+    echo "DISPOSABLE_DATABASE_URL must be set to use --disposable." >&2
+    exit 1
+  fi
+  DATABASE_URL="$DISPOSABLE_DATABASE_URL"
+  echo "Disposable mode: restoring into the migration harness database."
 fi
 
 if [ "$target" = "--latest" ]; then
