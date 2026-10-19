@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
+      backend_digest: ${{ steps.backend.outputs.digest }}
+      frontend_digest: ${{ steps.frontend.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,6 +44,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build & push backend image
+        id: backend
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -49,10 +52,19 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/backend:${{ steps.tag.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/backend:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.image_tag }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            BUILD_VERSION=${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Build & push frontend image
+        id: frontend
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
@@ -60,8 +72,22 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/frontend:${{ steps.tag.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/frontend:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.image_tag }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            BUILD_VERSION=${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Record image digests
+        run: |
+          echo "backend digest: ${{ steps.backend.outputs.digest }}"
+          echo "frontend digest: ${{ steps.frontend.outputs.digest }}"
+          echo "source revision: ${{ github.sha }}"
 
   deploy:
     name: Blue/green deploy
@@ -86,8 +112,16 @@ jobs:
             export IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
             export BACKEND_IMAGE=ghcr.io/${{ github.repository }}/backend
             export FRONTEND_IMAGE=ghcr.io/${{ github.repository }}/frontend
+            export BACKEND_DIGEST=${{ needs.build-and-push.outputs.backend_digest }}
+            export FRONTEND_DIGEST=${{ needs.build-and-push.outputs.frontend_digest }}
+            export SOURCE_REVISION=${{ github.sha }}
             export CANARY_WEIGHT=${{ github.event.inputs.canary_weight || '10' }}
             export CANARY_BAKE_SECONDS=${{ github.event.inputs.canary_bake_seconds || '60' }}
+            # Transactional rollout: the deploy script must gate traffic shift on
+            # migration compatibility and readiness. If either gate fails it
+            # exits non-zero BEFORE shifting traffic, leaving the prior release
+            # serving. Rollback restores the previous artifact by digest and
+            # never reverses schema destructively.
             ./scripts/deploy/blue-green-deploy.sh
 
       - name: Surface deployment metrics
@@ -99,5 +133,8 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd /opt/arenax
+            echo "Release: ${{ needs.build-and-push.outputs.image_tag }} (rev ${{ github.sha }})"
+            echo "Backend digest: ${{ needs.build-and-push.outputs.backend_digest }}"
+            echo "Frontend digest: ${{ needs.build-and-push.outputs.frontend_digest }}"
             echo "Last 5 deployments:"
             tail -n 5 deploy/metrics/deployments.jsonl || true
