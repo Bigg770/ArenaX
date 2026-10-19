@@ -8,6 +8,7 @@
 
 use crate::config::Config;
 use crate::models::User;
+use rust_decimal::prelude::ToPrimitive;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use thiserror::Error;
@@ -85,10 +86,10 @@ impl ReputationService {
             r#"
             SELECT 
                 id as user_id,
-                COALESCE(skill_score, 1000) as skill_score,
-                COALESCE(fair_play_score, 100) as fair_play_score,
+                COALESCE(skill_score, 1000) as "skill_score!",
+                COALESCE(fair_play_score, 100) as "fair_play_score!",
                 reputation_last_updated,
-                COALESCE(is_bad_actor, false) as is_bad_actor
+                COALESCE(is_bad_actor, false) as "is_bad_actor!"
             FROM users
             WHERE id = $1
             "#,
@@ -212,7 +213,7 @@ impl ReputationService {
             .await
             .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
 
-            if rep.fair_play_score < 30 {
+            if rep.fair_play_score.unwrap_or(100) < 30 {
                 sqlx::query!(
                     r#"UPDATE users SET is_bad_actor = true WHERE id = $1"#,
                     player_id
@@ -398,8 +399,8 @@ impl ReputationService {
             bad_actors_count: stats.bad_actors_count.unwrap_or(0) as i64,
             low_fair_play_count: stats.low_fair_play_count.unwrap_or(0) as i64,
             high_skill_count: stats.high_skill_count.unwrap_or(0) as i64,
-            avg_skill: stats.avg_skill.unwrap_or(1000.0),
-            avg_fair_play: stats.avg_fair_play.unwrap_or(100.0),
+            avg_skill: stats.avg_skill.and_then(|d| d.to_f64()).unwrap_or(1000.0),
+            avg_fair_play: stats.avg_fair_play.and_then(|d| d.to_f64()).unwrap_or(100.0),
         })
     }
 }

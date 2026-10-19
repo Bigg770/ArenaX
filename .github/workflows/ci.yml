@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, dev, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, dev, develop]
 
 jobs:
   secret-scan:
@@ -23,51 +23,288 @@ jobs:
           GITLEAKS_ENABLE_COMMITS: true
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
 
-  backend:
-    name: Backend
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build
-        working-directory: backend
-        run: cargo build --locked
-
-      - name: Test
-        working-directory: backend
-        run: cargo test --locked
-
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+    - name: Check PWA assets
+      run: npm run check:pwa-assets
 
-      - name: Install
-        run: npm ci
+    - name: Lint code
+      run: npm run lint
 
-      - name: Lint
-        run: npm run lint
+    - name: Type check
+      run: npx tsc --noEmit
+
+    - name: Run tests
+      run: npm test -- --ci --forceExit --passWithNoTests
+
+    - name: Build
+      run: npm run build
+      env:
+        NODE_ENV: production
+
+  # Server (TypeScript) CI
+  server:
+    name: Server
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ./server
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: server/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Generate Prisma Client
+      run: npm run prisma:generate
+    
+    - name: Type check (Lint)
+      run: npm run lint
+    
+    - name: Build
+      run: npm run build
+
+  # Backend database migration CI
+  backend-migrations:
+    name: Backend Migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Verify migration files
+      run: ./scripts/verify-migrations.sh
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Rollback verification (up -> down -> up, #871)
+      env:
+        SKIP_BACKUP: "1"  # CI database is disposable; never skip the backup on shared data
+      run: |
+        chmod +x ./scripts/rollback-verify.sh
+        ./scripts/rollback-verify.sh
+
+  # Backend (Rust) build & test
+  backend-build:
+    name: Backend Build & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # The realtime/session tests connect to Redis at 127.0.0.1:6379.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      REDIS_URL: redis://localhost:6379
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-target-
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Type check
+      run: cargo check --all-targets --locked
+
+    - name: Run tests
+      run: cargo test --all-targets --locked
+
+  # Contracts CI (Rust)
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ./contracts
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    
+    - name: Install wasm target
+      run: rustup target add wasm32-unknown-unknown
+    
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          contracts/target
+        key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
+    
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    
+    - name: Build contracts
+      run: cargo build --target wasm32-unknown-unknown --release
+    
+    - name: Run tests
+      run: cargo test
+
+  # Frontend E2E tests
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Install Playwright browsers
+      run: npx playwright install --with-deps chromium
+
+    - name: Build app
+      run: npm run build
+      env:
+        NODE_ENV: production
+
+    - name: Run E2E tests
+      run: npm run test:e2e
+      env:
+        PLAYWRIGHT_BASE_URL: http://localhost:3000
+        CI: true
 
     - name: Upload Playwright report
       uses: actions/upload-artifact@v4
@@ -78,11 +315,6 @@ jobs:
         retention-days: 7
 
   # Transactional rollout/rollback gate (#96)
-  #
-  # Validates that the deploy workflow keeps its transactional guarantees:
-  # traffic only shifts after readiness + migration gates pass, and rollback
-  # restores the prior artifact without destructive schema reversal. This job
-  # fails fast if the deploy workflow drifts from those invariants.
   deploy-gates:
     name: Deploy Gates
     runs-on: ubuntu-latest
@@ -101,8 +333,6 @@ jobs:
     - name: Verify readiness gate precedes traffic shift
       run: |
         DEPLOY=.github/workflows/deploy.yml
-        # The readiness/health gate must be present and must run before any
-        # traffic-shift step. We assert ordering by line number.
         READY_LINE=$(grep -n -i -E 'readiness|health' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
         TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
         if [ -z "$READY_LINE" ]; then
@@ -145,12 +375,10 @@ jobs:
           echo "::error::No rollback path found in deploy workflow"
           exit 1
         fi
-        # Rollback must reference the prior release/artifact identity.
         if ! grep -q -i -E 'previous|prior|PREVIOUS_RELEASE|PREVIOUS_IMAGE|rollback.*(image|release|artifact)' "$DEPLOY"; then
           echo "::error::Rollback does not reference the prior application artifact/release"
           exit 1
         fi
-        # Rollback must not run destructive schema reversal (down migrations).
         if grep -q -i -E 'migrate.*(down|revert)|sqlx migrate revert|rollback-verify' "$DEPLOY"; then
           echo "::error::Rollback performs destructive schema reversal; schema must remain backward-compatible"
           exit 1

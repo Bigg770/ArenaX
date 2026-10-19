@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ pub struct TransactionMetrics {
     pub completed_at: Option<DateTime<Utc>>,
     pub duration_ms: Option<i64>,
     pub status: TransactionStatus,
-    pub retry_count: u32,
+    pub retry_count: i32,
     pub error_message: Option<String>,
     pub metadata: serde_json::Value,
 }
@@ -302,10 +303,10 @@ impl TransactionMonitor {
             failed_transactions: stats.failed_transactions.unwrap_or(0) as i64,
             retried_transactions: stats.retried_transactions.unwrap_or(0) as i64,
             rolled_back_transactions: stats.rolled_back_transactions.unwrap_or(0) as i64,
-            avg_duration_ms: stats.avg_duration_ms,
+            avg_duration_ms: stats.avg_duration_ms.and_then(|d| d.to_f64()),
             max_duration_ms: stats.max_duration_ms,
             min_duration_ms: stats.min_duration_ms,
-            avg_retry_count: stats.avg_retry_count,
+            avg_retry_count: stats.avg_retry_count.and_then(|d| d.to_f64()),
         })
     }
 

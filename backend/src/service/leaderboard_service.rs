@@ -628,7 +628,59 @@ impl LeaderboardService {
         .bind(season_id)
         .fetch_all(&self.db_pool)
         .await
-        .map_err(|e| ApiError::DatabaseError(e))
+        .map_err(ApiError::from)
+    }
+
+    pub async fn get_elo_history(
+        &self,
+        player_id: Uuid,
+        category: &str,
+        start_date: DateTime<Utc>,
+        end_date: DateTime<Utc>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let entries = sqlx::query!(
+            r#"
+            SELECT id, user_id, game, match_id, rating_before, rating_after,
+                   rating_change, opponent_id, opponent_rating, result, created_at
+            FROM elo_history
+            WHERE user_id = $1 AND game = $2 AND created_at BETWEEN $3 AND $4
+            ORDER BY created_at ASC
+            "#,
+            player_id,
+            category,
+            start_date,
+            end_date
+        )
+        .fetch_all(&self.db_pool)
+        .await
+        .map_err(ApiError::DatabaseError)?;
+
+        let history: Vec<_> = entries
+            .into_iter()
+            .map(|row| {
+                serde_json::json!({
+                    "id": row.id,
+                    "user_id": row.user_id,
+                    "game": row.game,
+                    "match_id": row.match_id,
+                    "rating_before": row.rating_before,
+                    "rating_after": row.rating_after,
+                    "rating_change": row.rating_change,
+                    "opponent_id": row.opponent_id,
+                    "opponent_rating": row.opponent_rating,
+                    "result": row.result,
+                    "created_at": row.created_at,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "player_id": player_id,
+            "category": category,
+            "start_date": start_date,
+            "end_date": end_date,
+            "history": history
+        }))
     }
 }
 

@@ -18,7 +18,7 @@ pub struct Wallet {
     pub balance_ngn: Option<i64>, // in kobo
     pub balance_arenax_tokens: Option<i64>,
     pub balance_xlm: Option<i64>, // in stroops
-    pub stellar_account_id: Option<String>,
+    pub stellar_account_id: Option<Uuid>,
     pub stellar_public_key: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -36,7 +36,7 @@ pub struct Transaction {
     pub reference: String, // External payment reference
     pub description: String,
     pub metadata: Option<String>, // JSON object
-    pub stellar_transaction_id: Option<String>,
+    pub stellar_transaction_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

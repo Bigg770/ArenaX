@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
-use sqlx::PgPool;
+use serde::Serialize;
+use sqlx::{FromRow, PgPool};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -407,7 +408,7 @@ async fn build_user_export_archive(pool: &PgPool, user_id: Uuid) -> Result<Strin
         None => serde_json::json!(null),
     };
 
-    let transactions = sqlx::query_as::<_, serde_json::Value>(
+    let transactions: serde_json::Value = sqlx::query_scalar::<_, Option<serde_json::Value>>(
         r#"
         SELECT json_agg(t) AS agg FROM (
             SELECT id, transaction_type, amount, currency, status, reference,
@@ -419,9 +420,10 @@ async fn build_user_export_archive(pool: &PgPool, user_id: Uuid) -> Result<Strin
     .bind(user_id)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|| serde_json::json!([]));
 
-    let match_history = sqlx::query_as::<_, serde_json::Value>(
+    let match_history: serde_json::Value = sqlx::query_scalar::<_, Option<serde_json::Value>>(
         r#"
         SELECT json_agg(m) AS agg FROM (
             SELECT id, match_type, status, game_mode, player1_id, player2_id,
@@ -435,7 +437,8 @@ async fn build_user_export_archive(pool: &PgPool, user_id: Uuid) -> Result<Strin
     .bind(user_id)
     .fetch_one(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .unwrap_or_else(|| serde_json::json!([]));
 
     let archive = serde_json::json!({
         "generated_at": Utc::now().to_rfc3339(),

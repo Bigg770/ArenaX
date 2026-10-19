@@ -8,7 +8,7 @@ use crate::models::{
     TournamentStatus,
 };
 use crate::service::tournament_service::TournamentService;
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use std::sync::Arc;

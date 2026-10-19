@@ -16,6 +16,8 @@ mod service;
 mod orchestrator;
 mod security;
 mod telemetry;
+mod transaction;
+mod transaction_monitor;
 mod validators;
 
 use crate::config::Config;
@@ -127,13 +129,10 @@ async fn main() -> io::Result<()> {
     ));
 
     // Build idempotency middleware policy from config
-    let idempotency_policy = IdempotencyPolicy {
-        enabled: true,
-        key_header_name: "Idempotency-Key".to_string(),
-        ttl_seconds: config.idempotency.ttl_seconds,
-        max_response_size_kb: config.idempotency.max_response_size_kb,
-        conflict_status_code: 422,
-    };
+    let mut idempotency_policy = IdempotencyPolicy::default();
+    idempotency_policy.ttl_seconds = config.idempotency.ttl_seconds;
+    idempotency_policy.default_ttl_seconds = config.idempotency.ttl_seconds as i32;
+    idempotency_policy.max_response_size_kb = config.idempotency.max_response_size_kb;
 
     // Start background matchmaker worker
     let matchmaker_worker = matchmaker_service.clone();
