@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE stellar_accounts\n            SET is_funded = true, balance_xlm = $1, updated_at = $2\n            WHERE public_key = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "526b67248cbae71b7de7a329647123319ffb4b304d0fd2e63544e34d0b5056e9"
+}

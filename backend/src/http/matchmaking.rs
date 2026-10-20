@@ -2,38 +2,17 @@ use crate::api_error::ApiError;
 use crate::auth::Claims;
 use crate::db::DbPool;
 use crate::models::matchmaker::*;
-use crate::service::matchmaker::{MatchmakerService, EloEngine, MatchmakingConfig, QueueEntry};
+use crate::service::matchmaker::MatchmakerService;
 use crate::transaction::{execute_transaction, IsolationLevel, TransactionConfig};
 use actix_web::{web, HttpResponse, Result};
 use chrono::Utc;
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JoinQueueRequest {
-    pub game: String,
-    pub game_mode: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JoinQueueResponse {
-    pub success: bool,
-    pub queue_position: Option<usize>,
-    pub estimated_wait_time: Option<i32>,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LeaveQueueRequest {
-    pub game: String,
-    pub game_mode: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LeaveQueueResponse {
-    pub success: bool,
-    pub message: String,
-}
+pub use crate::models::matchmaker::{
+    JoinQueueRequest, JoinQueueResponse, LeaveQueueRequest, LeaveQueueResponse,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueueStatusResponse {
@@ -172,7 +151,7 @@ pub async fn leave_queue(
 
 /// Get queue status for current user
 pub async fn get_queue_status(
-    db_pool: web::Data<DbPool>,
+    _db_pool: web::Data<DbPool>,
     matchmaker: web::Data<MatchmakerService>,
     claims: web::ReqData<Claims>,
     path: web::Path<(String, String)>,
@@ -209,7 +188,7 @@ pub async fn get_queue_status(
 /// Get matchmaking statistics
 pub async fn get_matchmaking_stats(
     db_pool: web::Data<DbPool>,
-    matchmaker: web::Data<MatchmakerService>,
+    _matchmaker: web::Data<MatchmakerService>,
 ) -> Result<HttpResponse> {
     // Single query: total players waiting
     let total_query = sqlx::query!(
@@ -266,7 +245,7 @@ pub async fn get_matchmaking_stats(
         FROM matchmaking_queue
         WHERE status = $1
           AND matched_at IS NOT NULL
-          AND created_at >= $2
+          AND joined_at >= $2
         GROUP BY game, game_mode
         "#,
         QueueStatus::Matched as _,
@@ -380,8 +359,8 @@ pub async fn get_elo_history(
         "#,
         user_id,
         game,
-        limit,
-        offset
+        limit as i64,
+        offset as i64
     )
     .fetch_all(db_pool.as_ref())
     .await
@@ -418,6 +397,7 @@ async fn create_default_elo(db_pool: &DbPool, user_id: Uuid, game: &str) -> Resu
     let db_pool_clone = db_pool.clone();
 
     execute_transaction(&db_pool_clone, &config, move |tx| {
+        let game_clone = game_clone.clone();
         Box::pin(async move {
             sqlx::query!(
                 "INSERT INTO user_elo (user_id, game, current_rating, wins, losses, draws, created_at, updated_at) \
@@ -460,6 +440,8 @@ async fn add_to_database_queue(
     let db_pool_clone = db_pool.clone();
 
     execute_transaction(&db_pool_clone, &config, move |tx| {
+        let game_clone = game_clone.clone();
+        let game_mode_clone = game_mode_clone.clone();
         Box::pin(async move {
             // Check if user is already in queue (prevent duplicates)
             let existing = sqlx::query!(
@@ -524,6 +506,8 @@ async fn update_database_queue_status(
     let db_pool_clone = db_pool.clone();
 
     execute_transaction(&db_pool_clone, &config, move |tx| {
+        let game_clone = game_clone.clone();
+        let game_mode_clone = game_mode_clone.clone();
         Box::pin(async move {
             sqlx::query!(
                 "UPDATE matchmaking_queue SET status = $1 WHERE user_id = $2 AND game = $3 AND game_mode = $4 AND status = $5",
@@ -562,7 +546,7 @@ async fn get_overall_average_wait_time(db_pool: &DbPool) -> Result<f64, ApiError
         FROM matchmaking_queue
         WHERE status = $1
           AND matched_at IS NOT NULL
-          AND created_at >= $2
+          AND joined_at >= $2
         "#,
         QueueStatus::Matched as _,
         Utc::now() - chrono::Duration::hours(1)
@@ -571,5 +555,5 @@ async fn get_overall_average_wait_time(db_pool: &DbPool) -> Result<f64, ApiError
     .await
     .map_err(|e| ApiError::database_error(e))?;
 
-    Ok(result.avg_wait_seconds.unwrap_or(0.0))
+    Ok(result.avg_wait_seconds.and_then(|d| d.to_f64()).unwrap_or(0.0))
 }

@@ -20,20 +20,55 @@
     }
     #custom-header h1 { margin: 0; font-size: 1.6rem; color: #e94560; font-family: sans-serif; }
     #custom-header span { color: #a0a0b0; font-family: sans-serif; font-size: 0.9rem; }
+    #custom-header .meta { display: flex; flex-direction: column; gap: 4px; }
+    #custom-header .version {
+      display: inline-block;
+      background: #0f3460;
+      color: #e0e0e0;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+    #custom-header a { color: #e94560; font-family: sans-serif; font-size: 0.85rem; }
   </style>
 </head>
 <body>
   <div id="custom-header">
-    <div>
+    <div class="meta">
       <h1>⚔️ ArenaX API</h1>
       <span>Competitive gaming platform — REST + WebSocket reference</span>
+      <span>Contract version: <span class="version" id="contract-version">loading…</span></span>
+      <a href="./authentication.md#deprecation-policy" target="_blank" rel="noopener">Deprecation policy</a>
     </div>
   </div>
   <div id="swagger-ui"></div>
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
   <script>
+    // Prefer the versioned document served by the backend; fall back to the
+    // static copy checked into this directory for offline/local viewing.
+    const CONTRACT_URLS = ["/api/docs/openapi.json", "./openapi.yaml"];
+
+    function setContractVersion(version) {
+      const el = document.getElementById("contract-version");
+      if (el) el.textContent = version || "unknown";
+    }
+
     SwaggerUIBundle({
-      url: "./openapi.yaml",
+      url: CONTRACT_URLS[0],
+      urls: [
+        { url: CONTRACT_URLS[0], name: "Backend (versioned)" },
+        { url: CONTRACT_URLS[1], name: "Static copy" },
+      ],
+      "urls.primaryName": "Backend (versioned)",
+      onComplete: function (system) {
+        try {
+          const spec = system.getSystem().specSelectors.specJson().toJS();
+          setContractVersion(spec.info && spec.info.version);
+        } catch (e) {
+          setContractVersion(null);
+        }
+      },
       dom_id: "#swagger-ui",
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
       layout: "BaseLayout",

@@ -794,21 +794,6 @@ impl MatchService {
         // Create Elo history records
         self.create_elo_history(&match_record, winner_id).await?;
 
-        // Update on-chain reputation (if service is available)
-        if let Some(rep_service) = &self.reputation_service {
-            let players = vec![match_record.player1_id];
-            let skill_deltas = vec![25]; // Example: +25 for win, would be calculated based on outcome
-            
-            if let Err(e) = rep_service.update_reputation_on_match(
-                match_id,
-                &players,
-                &skill_deltas,
-            ).await {
-                error!("Failed to update reputation for match {}: {}", match_id, e);
-                // Don't fail the match completion, just log the error
-            }
-        }
-
         // Publish match completed event
         self.publish_match_event(serde_json::json!({
             "type": "completed",
@@ -1506,8 +1491,8 @@ impl MatchService {
             user_id,
             game,
             MatchStatus::Completed as _,
-            per_page,
-            offset
+            per_page as i64,
+            offset as i64
         )
         .fetch_all(&self.db_pool)
         .await
@@ -1590,8 +1575,8 @@ impl MatchService {
             LIMIT $2 OFFSET $3
             "#,
             game,
-            per_page,
-            offset
+            per_page as i64,
+            offset as i64
         )
         .fetch_all(&self.db_pool)
         .await
@@ -1621,10 +1606,7 @@ impl MatchService {
             leaderboard_entries.push(LeaderboardEntry {
                 rank: rank as i32,
                 user_id: ranking.user_id,
-                username: ranking
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| "Unknown".to_string()),
+                username: ranking.username.clone(),
                 avatar_url: ranking.avatar_url.clone(),
                 current_rating: ranking.current_rating,
                 peak_rating: ranking.peak_rating,
@@ -1825,7 +1807,7 @@ impl MatchService {
         .unwrap_or(0);
 
         if total > MAX_ATTEMPTS_PER_MATCH {
-            return Err(ApiError::TooManyRequests(format!(
+            return Err(ApiError::too_many_requests(format!(
                 "Score report rate limit exceeded (max {} attempts per match). \
                  Please contact support if you believe this is an error.",
                 MAX_ATTEMPTS_PER_MATCH
@@ -2206,8 +2188,8 @@ impl MatchService {
             LIMIT $2 OFFSET $3
             "#,
             DisputeStatus::Pending as _,
-            per_page,
-            offset
+            per_page as i64,
+            offset as i64
         )
         .fetch_all(&self.db_pool)
         .await

@@ -7,6 +7,7 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use redis::Client as RedisClient;
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::{BTreeMap, HashMap};
@@ -396,10 +397,10 @@ impl TournamentService {
             params.push(Box::new(status as i32));
         }
 
-        if let Some(game) = game_filter {
+        if let Some(ref game) = game_filter {
             param_count += 1;
             query.push_str(&format!(" AND t.game = ${}", param_count));
-            params.push(Box::new(game));
+            params.push(Box::new(game.clone()));
         }
 
         query.push_str(" GROUP BY t.id ORDER BY t.created_at DESC");
@@ -418,7 +419,7 @@ impl TournamentService {
             SELECT t.*, COUNT(tp.id) as current_participants
             FROM tournaments t
             LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id
-            WHERE ($1::text IS NULL OR t.status = $1::tournament_status)
+            WHERE ($1::integer IS NULL OR t.status = $1)
             AND ($2::text IS NULL OR t.game = $2)
             GROUP BY t.id
             ORDER BY t.created_at DESC
@@ -426,8 +427,8 @@ impl TournamentService {
             "#,
             status_filter.map(|s| s as i32),
             game_filter,
-            per_page,
-            offset
+            per_page as i64,
+            offset as i64
         )
         .fetch_all(&self.db_pool)
         .await
@@ -438,7 +439,7 @@ impl TournamentService {
             r#"
             SELECT COUNT(*) as count
             FROM tournaments t
-            WHERE ($1::text IS NULL OR t.status = $1::tournament_status)
+            WHERE ($1::integer IS NULL OR t.status = $1)
             AND ($2::text IS NULL OR t.game = $2)
             "#,
             status_filter.map(|s| s as i32),
@@ -1145,7 +1146,7 @@ impl TournamentService {
             Uuid::new_v4(),
             user_id,
             transaction_type as _,
-            amount,
+            rust_decimal::Decimal::from(amount),
             currency,
             TransactionStatus::Completed as _,
             Uuid::new_v4().to_string(),
@@ -1527,7 +1528,7 @@ impl TournamentService {
             Uuid::new_v4(),
             user_id,
             transaction_type as _,
-            amount,
+            rust_decimal::Decimal::from(amount),
             currency,
             TransactionStatus::Completed as _,
             Uuid::new_v4().to_string(),
@@ -1959,7 +1960,7 @@ impl TournamentService {
                                 tracing::info!(
                                     tournament_id = %tournament_id,
                                     user_id       = %participant.user_id,
-                                    tx_hash       = %result.hash,
+                                    tx_hash       = ?result.hash,
                                     prize_amount  = prize_amount,
                                     currency      = %prize_pool.currency,
                                     "Prize transfer confirmed on-chain"
@@ -2417,7 +2418,6 @@ impl TournamentService {
                 "#,
                 tournament_id,
                 participant.user_id,
-                participant.user_id,
                 MatchStatus::Completed as _
             )
             .fetch_one(&self.db_pool)
@@ -2655,14 +2655,14 @@ impl TournamentService {
             .unwrap_or(0);
 
         // Get match statistics
-        let match_stats = sqlx::query!("SELECT 
-            COUNT(*) as total_matches,
-            COUNT(CASE WHEN tm.status = 'completed' THEN 1 END) as completed_matches,
-            COUNT(CASE WHEN tm.status = 'pending' OR tm.status = 'scheduled' THEN 1 END) as pending_matches,
-            COUNT(CASE WHEN tm.status = 'in_progress' THEN 1 END) as in_progress_matches,
-            COUNT(CASE WHEN tm.status = 'disputed' THEN 1 END) as disputed_matches
+        let match_stats = sqlx::query!(r#"SELECT 
+            COUNT(*) as "total_matches!",
+            COUNT(CASE WHEN tm.status = 'completed' THEN 1 END) as "completed_matches!",
+            COUNT(CASE WHEN tm.status = 'pending' OR tm.status = 'scheduled' THEN 1 END) as "pending_matches!",
+            COUNT(CASE WHEN tm.status = 'in_progress' THEN 1 END) as "in_progress_matches!",
+            COUNT(CASE WHEN tm.status = 'disputed' THEN 1 END) as "disputed_matches!"
             FROM tournament_matches tm
-            WHERE tm.tournament_id = $1",
+            WHERE tm.tournament_id = $1"#,
             tournament_id
         )
         .fetch_one(&self.db_pool)
@@ -2725,7 +2725,7 @@ impl TournamentService {
         let offset = (page - 1) * per_page;
 
         // Get tournament participants with their ELO ratings
-        let participants = sqlx::query!("SELECT 
+        let participants = sqlx::query!(r#"SELECT 
             tp.id as participant_id,
             tp.user_id,
             tp.registered_at,
@@ -2737,10 +2737,10 @@ impl TournamentService {
             u.username,
             u.display_name,
             ue.current_rating as elo_rating,
-            COALESCE(wins.wins, 0) as wins,
-            COALESCE(losses.losses, 0) as losses,
-            COALESCE(draws.draws, 0) as draws,
-            COALESCE(matches.total_matches, 0) as total_matches
+            COALESCE(wins.wins, 0) as "wins!",
+            COALESCE(losses.losses, 0) as "losses!",
+            COALESCE(draws.draws, 0) as "draws!",
+            COALESCE(matches.total_matches, 0) as "total_matches!"
             FROM tournament_participants tp
             JOIN users u ON tp.user_id = u.id
             LEFT JOIN user_elo ue ON tp.user_id = ue.user_id AND ue.game = (SELECT game FROM tournaments WHERE id = $1)
@@ -2785,10 +2785,10 @@ impl TournamentService {
             ) matches ON tp.user_id = matches.user_id
             WHERE tp.tournament_id = $1
             ORDER BY tp.final_rank ASC, tp.registered_at ASC
-            LIMIT $2 OFFSET $3",
+            LIMIT $2 OFFSET $3"#,
             tournament_id,
-            per_page,
-            offset
+            per_page as i64,
+            offset as i64
         )
         .fetch_all(&self.db_pool)
         .await
@@ -2805,7 +2805,7 @@ impl TournamentService {
         // Convert to response format
         let mut leaderboard_entries = Vec::new();
         for row in participants {
-            let elo_rating = if row.elo_rating.is_some() { row.elo_rating.unwrap() } else { 1200 };
+            let elo_rating = row.elo_rating;
             let win_rate = if row.total_matches > 0 {
                 ((row.wins as f32 / row.total_matches as f32) * 100.0).round() as i32
             } else {
@@ -2826,7 +2826,7 @@ impl TournamentService {
                 win_rate_pct: win_rate,
                 prize_amount: row.prize_amount,
                 prize_currency: row.prize_currency,
-                participant_status: row.participant_status.parse().unwrap_or(ParticipantStatus::Registered),
+                participant_status: ParticipantStatus::from(row.participant_status),
             });
         }
 
@@ -2875,10 +2875,10 @@ impl TournamentService {
         // Get prize pool distribution
         let prize_distribution = sqlx::query!(
             r#"SELECT 
-            pp.total_amount as prize_pool_amount,
-            pp.currency as prize_pool_currency,
-            pp.distribution_percentages as distribution_percentages_json,
-            COALESCE(SUM(tp.prize_amount), 0) as distributed_amount
+            pp.total_amount as "prize_pool_amount!",
+            pp.currency as "prize_pool_currency!",
+            pp.distribution_percentages as "distribution_percentages_json!",
+            COALESCE(SUM(tp.prize_amount), 0) as "distributed_amount!"
             FROM prize_pools pp
             LEFT JOIN tournament_participants tp ON pp.tournament_id = tp.tournament_id AND tp.prize_amount IS NOT NULL
             WHERE pp.tournament_id = $1
@@ -2896,7 +2896,7 @@ impl TournamentService {
             MIN(tp.registered_at) as first_registration,
             MAX(tp.registered_at) as last_registration,
             COUNT(CASE WHEN tp.entry_fee_paid THEN 1 END) as paid_registrations,
-            COUNT(CASE WHEN tp.status = 'active' THEN 1 END) as active_participants
+            COUNT(CASE WHEN tp.status = 2 THEN 1 END) as active_participants
             FROM tournament_participants tp
             WHERE tp.tournament_id = $1"#,
             tournament_id
@@ -2926,13 +2926,12 @@ impl TournamentService {
         // Convert JSON distribution percentages
         let distribution_percentages: Vec<f64> = prize_distribution
             .as_ref()
-            .and_then(|p| p.distribution_percentages_json.as_ref())
-            .and_then(|json_str| serde_json::from_str(json_str).ok())
+            .and_then(|p| serde_json::from_str(&p.distribution_percentages_json).ok())
             .unwrap_or_default();
 
         let prize_pool_amount = prize_distribution.as_ref().map(|p| p.prize_pool_amount).unwrap_or(0);
-        let prize_pool_currency = prize_distribution.as_ref().and_then(|p| p.prize_pool_currency.clone()).unwrap_or_else(|| "USD".to_string());
-        let distributed_amount = prize_distribution.as_ref().and_then(|p| p.distributed_amount).unwrap_or(0);
+        let prize_pool_currency = prize_distribution.as_ref().map(|p| p.prize_pool_currency.clone()).unwrap_or_else(|| "USD".to_string());
+        let distributed_amount = prize_distribution.as_ref().and_then(|p| p.distributed_amount.to_i64()).unwrap_or(0);
 
         Ok(TournamentAnalyticsResponse {
             tournament_id,
@@ -2950,14 +2949,14 @@ impl TournamentService {
             round_statistics: round_stats
                 .into_iter()
                 .map(|r| TournamentRoundStatistics {
-                    round_number: r.round_number.unwrap_or(0),
+                    round_number: r.round_number,
                     round_type: r.round_type,
                     total_matches: r.total_matches.unwrap_or(0),
                     completed_matches: r.completed_matches.unwrap_or(0),
                     pending_matches: r.pending_matches.unwrap_or(0),
                     in_progress_matches: r.in_progress_matches.unwrap_or(0),
                     disputed_matches: r.disputed_matches.unwrap_or(0),
-                    avg_duration_secs: r.avg_duration_secs.map(|d| d as f64).unwrap_or(0.0),
+                    avg_duration_secs: r.avg_duration_secs.and_then(|d| d.to_f64()).unwrap_or(0.0),
                 })
                 .collect(),
             prize_pool: TournamentPrizePool {
@@ -2968,10 +2967,10 @@ impl TournamentService {
             },
             skill_level_distribution: TournamentSkillDistribution {
                 total_participants: skill_distribution.total_participants.unwrap_or(0),
-                average_elo: skill_distribution.avg_elo.unwrap_or(0.0) as i32,
-                min_elo: skill_distribution.min_elo.unwrap_or(0.0) as i32,
-                max_elo: skill_distribution.max_elo.unwrap_or(0.0) as i32,
-                elo_stddev: skill_distribution.elo_stddev.unwrap_or(0.0) as i32,
+                average_elo: skill_distribution.avg_elo.and_then(|d| d.to_i32()).unwrap_or(0),
+                min_elo: skill_distribution.min_elo.unwrap_or(0),
+                max_elo: skill_distribution.max_elo.unwrap_or(0),
+                elo_stddev: skill_distribution.elo_stddev.and_then(|d| d.to_i32()).unwrap_or(0),
             },
         })
     }
@@ -3026,42 +3025,23 @@ impl TournamentService {
 
             let mut round_matches = Vec::new();
             for match_row in matches {
-                // Get player names and display info
-                let player1_info = if let Some(username) = match_row.player1_username {
-                    TournamentPlayerInfo {
-                        user_id: match_row.player1_id,
-                        username,
-                        display_name: match_row.player1_display_name,
-                        final_rank: match_row.player1_final_rank,
-                    }
-                } else {
-                    TournamentPlayerInfo {
-                        user_id: match_row.player1_id,
-                        username: "Unknown".to_string(),
-                        display_name: None,
-                        final_rank: None,
-                    }
+                let player1_info = TournamentPlayerInfo {
+                    user_id: match_row.player1_id,
+                    username: match_row.player1_username,
+                    display_name: match_row.player1_display_name,
+                    final_rank: match_row.player1_final_rank,
                 };
 
-                let player2_info = if let Some(username) = match_row.player2_username {
-                    TournamentPlayerInfo {
-                        user_id: match_row.player2_id.unwrap_or_default(),
-                        username,
-                        display_name: match_row.player2_display_name,
-                        final_rank: match_row.player2_final_rank,
-                    }
-                } else {
-                    TournamentPlayerInfo {
-                        user_id: match_row.player2_id.unwrap_or_default(),
-                        username: "Bye".to_string(),
-                        display_name: None,
-                        final_rank: None,
-                    }
+                let player2_info = TournamentPlayerInfo {
+                    user_id: match_row.player2_id.unwrap_or_default(),
+                    username: match_row.player2_username,
+                    display_name: match_row.player2_display_name,
+                    final_rank: match_row.player2_final_rank,
                 };
 
                 round_matches.push(BracketMatch {
                     match_id: match_row.match_id,
-                    match_number: match_row.match_number.unwrap_or(0),
+                    match_number: match_row.match_number,
                     player1: player1_info,
                     player2: player2_info,
                     winner_id: match_row.winner_id,

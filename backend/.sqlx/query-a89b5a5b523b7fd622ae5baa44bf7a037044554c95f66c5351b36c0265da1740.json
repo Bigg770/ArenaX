@@ -1,0 +1,195 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO matches (\n                id, tournament_id, round_id, match_type, status, player1_id, player2_id,\n                player1_elo_before, player2_elo_before, game_mode, created_at, updated_at\n            ) VALUES (\n                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12\n            ) RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tournament_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "round_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "match_type",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "player1_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "player2_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "winner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "player1_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "player2_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "player1_elo_before",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "player2_elo_before",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "player1_elo_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "player2_elo_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "scheduled_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 19,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 20,
+        "name": "map",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 21,
+        "name": "match_duration",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 22,
+        "name": "report_deadline",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 23,
+        "name": "forfeited_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 24,
+        "name": "conflict_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 25,
+        "name": "round_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 26,
+        "name": "scheduled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 27,
+        "name": "match_number",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Varchar",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "a89b5a5b523b7fd622ae5baa44bf7a037044554c95f66c5351b36c0265da1740"
+}

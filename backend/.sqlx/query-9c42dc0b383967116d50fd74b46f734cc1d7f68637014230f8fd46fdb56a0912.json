@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id, on_chain_match_id, player_a, player_b, winner,\n                state as \"state: MatchAuthorityState\",\n                created_at, started_at, ended_at, last_chain_tx,\n                idempotency_key, metadata\n            FROM match_authority\n            WHERE idempotency_key = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "on_chain_match_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "player_a",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "player_b",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "winner",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "state: MatchAuthorityState",
+        "type_info": {
+          "Custom": {
+            "name": "match_authority_state",
+            "kind": {
+              "Enum": [
+                "CREATED",
+                "STARTED",
+                "COMPLETED",
+                "DISPUTED",
+                "FINALIZED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "ended_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "last_chain_tx",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "idempotency_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "9c42dc0b383967116d50fd74b46f734cc1d7f68637014230f8fd46fdb56a0912"
+}

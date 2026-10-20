@@ -1,7 +1,8 @@
 use crate::api_error::ApiError;
 use crate::db::DbPool;
 use crate::models::match_authority::*;
-use crate::service::soroban_service::{SorobanService, SorobanTxResult};
+use crate::service::reputation_service::{ReputationError, ReputationService};
+use crate::service::soroban_service::{SorobanService, SorobanTxResult, TxStatus};
 use crate::transaction::{execute_transaction, IsolationLevel, TransactionConfig};
 use chrono::Utc;
 use sqlx::Row;
@@ -15,6 +16,7 @@ pub struct MatchAuthorityService {
     db_pool: DbPool,
     soroban_service: Arc<SorobanService>,
     match_lifecycle_contract: String,
+    reputation_service: Option<Arc<ReputationService>>,
 }
 
 impl MatchAuthorityService {
@@ -28,7 +30,13 @@ impl MatchAuthorityService {
             db_pool,
             soroban_service,
             match_lifecycle_contract,
+            reputation_service: None,
         }
+    }
+
+    pub fn with_reputation_service(mut self, reputation_service: Arc<ReputationService>) -> Self {
+        self.reputation_service = Some(reputation_service);
+        self
     }
 
     // =============================================================================
@@ -59,6 +67,10 @@ impl MatchAuthorityService {
         let match_lifecycle_contract = self.match_lifecycle_contract.clone();
 
         let match_id = execute_transaction(&db_pool, &config, move |tx| {
+            let dto_clone = dto_clone.clone();
+            let signer_secret_clone = signer_secret_clone.clone();
+            let soroban_service = soroban_service.clone();
+            let match_lifecycle_contract = match_lifecycle_contract.clone();
             Box::pin(async move {
                 // Check for idempotency within transaction
                 if let Some(ref key) = dto_clone.idempotency_key {
@@ -97,7 +109,7 @@ impl MatchAuthorityService {
                 );
 
                 // Step 1: Create match on blockchain
-                let chain_result = create_match_on_chain_helper(
+                let (chain_result, on_chain_match_id) = create_match_on_chain_helper(
                     &soroban_service,
                     &match_lifecycle_contract,
                     &dto_clone,
@@ -119,7 +131,7 @@ impl MatchAuthorityService {
                     )
                     "#,
                     match_id,
-                    chain_result.hash,
+                    on_chain_match_id,
                     dto_clone.player_a,
                     dto_clone.player_b,
                     chain_result.hash.clone(),
@@ -208,6 +220,9 @@ impl MatchAuthorityService {
         let match_lifecycle_contract = self.match_lifecycle_contract.clone();
 
         execute_transaction(&db_pool, &config, move |tx| {
+            let signer_secret_clone = signer_secret_clone.clone();
+            let soroban_service = soroban_service.clone();
+            let match_lifecycle_contract = match_lifecycle_contract.clone();
             Box::pin(async move {
                 // Get match with row lock
                 let match_entity = sqlx::query_as!(
@@ -501,59 +516,68 @@ impl MatchAuthorityService {
         // Get match
         let match_entity = self.get_match_entity(match_id).await?;
 
-        // Validate FSM transition
-        self.validate_transition(&match_entity.state, &MatchAuthorityState::Finalized)?;
+        if match_entity.state != MatchAuthorityState::Finalized {
+            self.validate_transition(&match_entity.state, &MatchAuthorityState::Finalized)?;
 
-        info!(
-            match_id = %match_id,
-            from_state = ?match_entity.state,
-            "Finalizing match"
-        );
+            info!(
+                match_id = %match_id,
+                from_state = ?match_entity.state,
+                "Finalizing match"
+            );
 
-        // Step 1: Submit finalize transaction to blockchain (settlement)
-        let chain_result = self
-            .finalize_match_on_chain(&match_entity.on_chain_match_id, signer_secret)
+            let chain_result = self
+                .finalize_match_on_chain(&match_entity.on_chain_match_id, signer_secret)
+                .await
+                .map_err(|e| {
+                    error!(error = %e, "Failed to finalize match on blockchain");
+                    ApiError::internal_error(format!("Blockchain finalization failed: {}", e))
+                })?;
+
+            sqlx::query!(
+                r#"
+                UPDATE match_authority
+                SET state = 'FINALIZED'::match_authority_state,
+                    last_chain_tx = $1
+                WHERE id = $2
+                "#,
+                chain_result.hash,
+                match_id
+            )
+            .execute(&self.db_pool)
             .await
-            .map_err(|e| {
-                error!(error = %e, "Failed to finalize match on blockchain");
-                ApiError::internal_error(format!("Blockchain finalization failed: {}", e))
-            })?;
+            .map_err(|e| ApiError::database_error(e))?;
 
-        // Step 2: Update match state
-        sqlx::query!(
-            r#"
-            UPDATE match_authority
-            SET state = 'FINALIZED'::match_authority_state,
-                last_chain_tx = $1
-            WHERE id = $2
-            "#,
-            chain_result.hash,
-            match_id
-        )
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| ApiError::database_error(e))?;
+            self.record_chain_sync(
+                match_id,
+                "finalize_match",
+                &chain_result.hash,
+                "pending",
+                None,
+            )
+            .await?;
 
-        // Step 3: Record blockchain sync
-        self.record_chain_sync(
-            match_id,
-            "finalize_match",
-            &chain_result.hash,
-            "pending",
-            None,
-        )
-        .await?;
+            self.record_transition(
+                match_id,
+                match_entity.state,
+                MatchAuthorityState::Finalized,
+                "system",
+                Some(&chain_result.hash),
+                None,
+            )
+            .await?;
+        }
 
-        // Step 4: Record transition
-        self.record_transition(
-            match_id,
-            match_entity.state,
-            MatchAuthorityState::Finalized,
-            "system",
-            Some(&chain_result.hash),
-            None,
-        )
-        .await?;
+        if let Some(reputation_service) = &self.reputation_service {
+            reputation_service
+                .update_reputation_on_finalized_match(match_id)
+                .await
+                .map_err(|error| match error {
+                    ReputationError::DatabaseError(message) => {
+                        ApiError::internal_error(format!("Reputation update failed: {message}"))
+                    }
+                    other => ApiError::internal_error(format!("Reputation update failed: {other}")),
+                })?;
+        }
 
         info!(match_id = %match_id, "Match finalized successfully");
 
@@ -718,7 +742,7 @@ impl MatchAuthorityService {
     // =============================================================================
 
     /// Validate state transition according to FSM rules
-    fn validate_transition(
+    pub fn validate_transition(
         &self,
         from: &MatchAuthorityState,
         to: &MatchAuthorityState,
@@ -852,6 +876,7 @@ impl MatchAuthorityService {
         signer_secret: &str,
     ) -> Result<SorobanTxResult, String> {
         let args = serde_json::json!({
+            "operator": crate::service::stellar_service::stellar_public_from_secret(signer_secret)?,
             "match_id": on_chain_match_id,
             "winner": winner,
         });
@@ -865,6 +890,7 @@ impl MatchAuthorityService {
             )
             .await
             .map_err(|e| format!("Soroban complete_match failed: {}", e))
+            .and_then(|result| require_successful_transaction(result, "complete_match"))
     }
 
     /// Raise dispute on Soroban
@@ -875,19 +901,21 @@ impl MatchAuthorityService {
         signer_secret: &str,
     ) -> Result<SorobanTxResult, String> {
         let args = serde_json::json!({
+            "operator": crate::service::stellar_service::stellar_public_from_secret(signer_secret)?,
             "match_id": on_chain_match_id,
-            "disputer": actor,
+            "actor": actor,
         });
 
         self.soroban_service
             .invoke(
                 &self.match_lifecycle_contract,
-                "raise_dispute",
+                "raise_dispute_by_operator",
                 &args,
                 signer_secret,
             )
             .await
             .map_err(|e| format!("Soroban raise_dispute failed: {}", e))
+            .and_then(|result| require_successful_transaction(result, "raise_dispute"))
     }
 
     /// Finalize match on Soroban (settlement)
@@ -897,6 +925,7 @@ impl MatchAuthorityService {
         signer_secret: &str,
     ) -> Result<SorobanTxResult, String> {
         let args = serde_json::json!({
+            "operator": crate::service::stellar_service::stellar_public_from_secret(signer_secret)?,
             "match_id": on_chain_match_id,
         });
 
@@ -909,6 +938,7 @@ impl MatchAuthorityService {
             )
             .await
             .map_err(|e| format!("Soroban finalize_match failed: {}", e))
+            .and_then(|result| require_successful_transaction(result, "finalize_match"))
     }
 
     /// Get match state from blockchain
@@ -938,8 +968,16 @@ async fn create_match_on_chain_helper(
     match_lifecycle_contract: &str,
     dto: &CreateMatchDTO,
     signer_secret: &str,
-) -> Result<SorobanTxResult, String> {
+) -> Result<(SorobanTxResult, String), String> {
+    let operator = crate::service::stellar_service::stellar_public_from_secret(signer_secret)?;
+    let match_id = format!(
+        "{:032x}{:032x}",
+        Uuid::new_v4().as_u128(),
+        Uuid::new_v4().as_u128()
+    );
     let args = serde_json::json!({
+        "operator": operator,
+        "match_id": match_id.clone(),
         "player_a": dto.player_a,
         "player_b": dto.player_b,
     });
@@ -952,6 +990,8 @@ async fn create_match_on_chain_helper(
             signer_secret,
         )
         .await
+        .and_then(|result| require_successful_transaction(result, "create_match"))
+        .map(|result| (result, match_id))
         .map_err(|e| format!("Soroban create_match failed: {}", e))
 }
 
@@ -963,6 +1003,7 @@ async fn start_match_on_chain_helper(
     signer_secret: &str,
 ) -> Result<SorobanTxResult, String> {
     let args = serde_json::json!({
+        "actor": crate::service::stellar_service::stellar_public_from_secret(signer_secret)?,
         "match_id": on_chain_match_id,
     });
 
@@ -975,6 +1016,21 @@ async fn start_match_on_chain_helper(
         )
         .await
         .map_err(|e| format!("Soroban start_match failed: {}", e))
+        .and_then(|result| require_successful_transaction(result, "start_match"))
+}
+
+fn require_successful_transaction(
+    result: SorobanTxResult,
+    operation: &str,
+) -> Result<SorobanTxResult, String> {
+    if result.status == TxStatus::Success {
+        Ok(result)
+    } else {
+        Err(format!(
+            "Soroban {operation} was not confirmed: {}",
+            result.error.unwrap_or_else(|| format!("status {:?}", result.status))
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -989,6 +1045,7 @@ mod tests {
                 crate::service::soroban_service::NetworkConfig::testnet(),
             )),
             match_lifecycle_contract: "C123".to_string(),
+            reputation_service: None,
         };
 
         // Valid transition

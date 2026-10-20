@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO api_keys (\n                id, key, name, description, user_id, key_type, scopes,\n                expiration_date, is_active, rotation_enabled, rotation_interval,\n                next_rotation_date, max_uses, use_count, metadata, created_at,\n                overlap_duration_seconds, old_key_hash, old_key_expires_at, webhook_url\n            )\n            SELECT \n                $1, $2, name, description, user_id, key_type, scopes,\n                expiration_date, true, rotation_enabled, rotation_interval,\n                $3, max_uses, 0, metadata, NOW(),\n                $4, NULL, NULL, webhook_url\n            FROM api_keys\n            WHERE id = $5\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Timestamptz",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a8e2521e012f0388f00e0d7f3ebfe20b8d50ae34fa93c9dac5973bf5301a7c0"
+}

@@ -1,5 +1,11 @@
 #![no_std]
 
+//! ArenaX's SEP-41-style token interface uses 7 decimal places, matching the
+//! Stellar asset convention. `mint` and `burn` are admin-minter aliases;
+//! `mint_as` and `burn_as` support separately authorized minter addresses.
+//! Allowances expire at the first ledger sequence greater than or equal to
+//! their configured expiration.
+
 mod flash_loan_protection;
 use flash_loan_protection::FlashLoanGuard;
 
@@ -112,6 +118,13 @@ pub struct PauseInfo {
     pub reason: Symbol,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Allowance {
+    pub amount: i128,
+    pub expiration_ledger: u32,
+}
+
 /// Scheduled upgrade details (#1064).
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -126,7 +139,9 @@ pub struct ScheduledUpgrade {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    Minter(Address),
     Balance(Address),
+    Allowance(Address, Address),
     TotalSupply,
     Vesting(Address),
     Lockups(Address),
@@ -178,8 +193,12 @@ impl AxToken {
         if Self::has_admin(env) {
             panic!("already initialized");
         }
+        admin.require_auth();
 
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Minter(admin), &true);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
         env.storage()
             .instance()
@@ -190,7 +209,8 @@ impl AxToken {
     }
 
     pub fn mint(env: &Env, to: Address, amount: i128) {
-        Self::require_admin(env);
+        Self::require_minter(env);
+        Self::require_not_paused(env);
 
         if amount <= 0 {
             panic!("amount must be positive");
@@ -222,6 +242,32 @@ impl AxToken {
         events::emit_mint(env, &to, amount);
     }
 
+    pub fn mint_as(env: &Env, minter: Address, to: Address, amount: i128) {
+        Self::require_minter_address(env, &minter);
+        Self::require_not_paused(env);
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let new_supply = Self::total_supply(env)
+            .checked_add(amount)
+            .expect("supply overflow");
+        let cap = Self::get_supply_cap(env.clone());
+        if cap > 0 && new_supply > cap {
+            panic!("supply cap exceeded");
+        }
+        let new_balance = Self::balance(env, to.clone())
+            .checked_add(amount)
+            .expect("balance overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::Balance(to.clone()), &new_balance);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &new_supply);
+        Self::checkpoint_add(env, &Self::voting_power_holder(env, &to), amount);
+        events::emit_mint(env, &to, amount);
+    }
+
     /// Mint to many recipients in a single transaction.
     ///
     /// `recipients[i]` receives `amounts[i]`. All checks (length match,
@@ -238,7 +284,8 @@ impl AxToken {
     /// mint event is still emitted per input entry, matching what calling
     /// `mint` that many times would have emitted.
     pub fn batch_mint(env: &Env, recipients: Vec<Address>, amounts: Vec<i128>) {
-        Self::require_admin(env);
+        Self::require_minter(env);
+        Self::require_not_paused(env);
 
         if recipients.len() != amounts.len() {
             panic!("recipients and amounts length mismatch");
@@ -297,7 +344,8 @@ impl AxToken {
     }
 
     pub fn burn(env: &Env, from: Address, amount: i128) {
-        Self::require_admin(env);
+        Self::require_minter(env);
+        Self::require_not_paused(env);
 
         if amount <= 0 {
             panic!("amount must be positive");
@@ -332,46 +380,141 @@ impl AxToken {
         events::emit_burn(env, &from, amount);
     }
 
-    pub fn transfer(env: &Env, from: Address, to: Address, amount: i128) {
-        from.require_auth();
-
-        if Self::is_paused(env.clone()) {
-            panic!("contract is paused");
-        }
-
+    pub fn burn_as(env: &Env, minter: Address, from: Address, amount: i128) {
+        Self::require_minter_address(env, &minter);
+        Self::require_not_paused(env);
         if amount <= 0 {
             panic!("amount must be positive");
         }
-
-        if from == to {
-            panic!("cannot transfer to self");
-        }
-
-        // Flash loan protection: reject same-sequence re-use
         if FlashLoanGuard::check_and_set_sequence(env, &from) {
-            panic!("flash loan detected: same-sequence transfer");
+            panic!("flash loan detected: same-sequence burn");
         }
-
-        let from_balance = Self::balance(env, from.clone());
-        if from_balance < amount {
+        let current_balance = Self::balance(env, from.clone());
+        if current_balance < amount {
             panic!("insufficient balance");
         }
-
-        let new_from_balance = from_balance - amount;
+        let current_supply = Self::total_supply(env);
+        let new_supply = current_supply.checked_sub(amount).expect("supply underflow");
         env.storage()
             .instance()
-            .set(&DataKey::Balance(from.clone()), &new_from_balance);
-
-        let to_balance = Self::balance(env, to.clone());
-        let new_to_balance = to_balance + amount;
+            .set(&DataKey::Balance(from.clone()), &(current_balance - amount));
         env.storage()
             .instance()
-            .set(&DataKey::Balance(to.clone()), &new_to_balance);
-
+            .set(&DataKey::TotalSupply, &new_supply);
         Self::checkpoint_add(env, &Self::voting_power_holder(env, &from), -amount);
-        Self::checkpoint_add(env, &Self::voting_power_holder(env, &to), amount);
+        events::emit_burn(env, &from, amount);
+    }
 
-        events::emit_transfer(env, &from, &to, amount);
+    pub fn transfer(env: &Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        Self::require_not_paused(env);
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        Self::move_tokens(env, from, to, amount);
+    }
+
+    pub fn approve(
+        env: &Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        expiration_ledger: u32,
+    ) {
+        from.require_auth();
+        if amount < 0 {
+            panic!("amount cannot be negative");
+        }
+        if expiration_ledger <= env.ledger().sequence() {
+            panic!("allowance expiration must be in the future");
+        }
+        let key = DataKey::Allowance(from.clone(), spender.clone());
+        if amount == 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(
+                &key,
+                &Allowance {
+                    amount,
+                    expiration_ledger,
+                },
+            );
+        }
+        env.events().publish(
+            (Symbol::new(env, "approve"), from, spender),
+            (amount, expiration_ledger),
+        );
+    }
+
+    pub fn allowance(env: &Env, from: Address, spender: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Allowance>(&DataKey::Allowance(from, spender))
+            .filter(|allowance| allowance.expiration_ledger > env.ledger().sequence())
+            .map(|allowance| allowance.amount)
+            .unwrap_or(0)
+    }
+
+    pub fn transfer_from(
+        env: &Env,
+        spender: Address,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) {
+        spender.require_auth();
+        Self::require_not_paused(env);
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let key = DataKey::Allowance(from.clone(), spender.clone());
+        let mut allowance: Allowance = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .filter(|allowance| allowance.expiration_ledger > env.ledger().sequence())
+            .expect("allowance expired or missing");
+        if allowance.amount < amount {
+            panic!("insufficient allowance");
+        }
+        allowance.amount -= amount;
+        if allowance.amount == 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &allowance);
+        }
+        Self::move_tokens(env, from, to, amount);
+    }
+
+    /// Token precision, following the Stellar asset convention.
+    pub fn decimals(_env: &Env) -> u32 {
+        7
+    }
+
+    pub fn name(env: &Env) -> String {
+        String::from_str(env, "ArenaX")
+    }
+
+    pub fn symbol(env: &Env) -> String {
+        String::from_str(env, "AX")
+    }
+
+    pub fn set_minter(env: &Env, minter: Address, authorized: bool) {
+        Self::require_admin(env);
+        env.storage()
+            .instance()
+            .set(&DataKey::Minter(minter.clone()), &authorized);
+        env.events().publish(
+            (Symbol::new(env, "MINTER"), minter),
+            (authorized,),
+        );
+    }
+
+    pub fn is_minter(env: &Env, minter: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Minter(minter))
+            .unwrap_or(false)
     }
 
     pub fn balance(env: &Env, addr: Address) -> i128 {
@@ -394,7 +537,22 @@ impl AxToken {
 
     pub fn set_admin(env: &Env, new_admin: Address) {
         Self::require_admin(env);
+        if new_admin == Self::get_admin(env) {
+            panic!("new admin must be different");
+        }
+        new_admin.require_auth();
+        let current_admin = Self::get_admin(env);
+        env.storage()
+            .instance()
+            .set(&DataKey::Minter(current_admin.clone()), &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::Minter(new_admin.clone()), &true);
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(env, "ADMIN"),),
+            (current_admin, new_admin),
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -1755,6 +1913,56 @@ impl AxToken {
     fn require_admin(env: &Env) {
         let admin = Self::get_admin(env);
         admin.require_auth();
+    }
+
+    fn require_minter(env: &Env) {
+        let admin = Self::get_admin(env);
+        Self::require_minter_address(env, &admin);
+    }
+
+    fn require_minter_address(env: &Env, minter: &Address) {
+        minter.require_auth();
+        if !env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Minter(minter.clone()))
+            .unwrap_or(false)
+        {
+            panic!("caller is not an authorized minter");
+        }
+    }
+
+    fn require_not_paused(env: &Env) {
+        if Self::is_paused(env.clone()) {
+            panic!("contract is paused");
+        }
+    }
+
+    fn move_tokens(env: &Env, from: Address, to: Address, amount: i128) {
+        if from == to {
+            panic!("cannot transfer to self");
+        }
+        if FlashLoanGuard::check_and_set_sequence(env, &from) {
+            panic!("flash loan detected: same-sequence transfer");
+        }
+
+        let from_balance = Self::balance(env, from.clone());
+        if from_balance < amount {
+            panic!("insufficient balance");
+        }
+        let to_balance = Self::balance(env, to.clone());
+        let new_to_balance = to_balance.checked_add(amount).expect("balance overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Balance(from.clone()), &(from_balance - amount));
+        env.storage()
+            .instance()
+            .set(&DataKey::Balance(to.clone()), &new_to_balance);
+
+        Self::checkpoint_add(env, &Self::voting_power_holder(env, &from), -amount);
+        Self::checkpoint_add(env, &Self::voting_power_holder(env, &to), amount);
+        events::emit_transfer(env, &from, &to, amount);
     }
 }
 

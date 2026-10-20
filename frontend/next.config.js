@@ -139,6 +139,16 @@ const nextConfig = {
     }
     return config;
   },
+  async redirects() {
+    return [
+      {
+        // Block public access to source map files (#50)
+        source: "/:path*.map",
+        destination: "/404",
+        permanent: false,
+      },
+    ];
+  },
   async rewrites() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL;
     if (apiUrl) {

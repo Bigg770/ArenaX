@@ -176,14 +176,71 @@ docker-compose up postgres redis minio -d
 make dev-backend
 ```
 
-### Service Ports
-| Service  | Port |
-|----------|------|
-| frontend | 3000 |
-| backend  | 8080 |
-| postgres | 5432 |
-| redis    | 6379 |
-| minio    | 9000 |
+## Backup & Recovery Objectives
+
+ArenaX treats backups as a verified recovery capability, not just a scheduled job.
+The objectives below are the contract that backup automation and restore drills must
+meet. Any change to backup scripts must keep these objectives satisfied.
+
+### Recovery Objectives
+
+| Data set | RPO (max data loss) | RTO (max downtime) |
+|----------|---------------------|--------------------|
+| PostgreSQL (application data) | 15 minutes | 60 minutes |
+| Required metadata (schema, migrations, config) | 24 hours | 60 minutes |
+| Secrets (JWT keys, DB credentials, API keys) | 24 hours | 60 minutes |
+
+- **RPO** is measured from the timestamp of the last verified backup to the moment
+  of failure. Backups must run at least every 15 minutes (PostgreSQL WAL archiving)
+  and daily for metadata/secrets.
+- **RTO** is measured from incident declaration to full traffic cutover on the
+  restored environment. The restore drill must demonstrate this end-to-end.
+
+### Backup Security Requirements
+
+- Backups **must be encrypted at rest** (age/GPG or storage-native encryption).
+  Plaintext dumps must never be written to shared storage.
+- Access is **least-privilege**: only the backup service account and on-call
+  operators may read backup artifacts. Public/broad bucket ACLs are forbidden.
+- Artifact retention is bounded (e.g. 30 days) and enforced by lifecycle policy so
+  stale copies do not accumulate with standing read access.
+- Encryption keys are stored separately from the backups they protect.
+
+### Independent Integrity Verification
+
+Integrity is verified by a step **separate from backup creation** so a corrupt or
+partial upload cannot self-certify:
+
+1. The backup job writes a SHA-256 checksum alongside each artifact.
+2. A separate verification job downloads the artifact, recomputes the checksum,
+   and compares it to the recorded value.
+3. The verification job also performs a decrypt-and-`pg_restore --list` (or
+   `pg_verifybackup`) sanity check to confirm the archive is structurally valid.
+4. A failed verification alerts on-call and marks the backup as unusable; it must
+   not be counted toward the RPO.
+
+### Restore Drill Procedure
+
+Run this drill at least quarterly and before any major release. Retain the report.
+
+1. **Provision an isolated staging environment** with no production traffic.
+2. **Restore PostgreSQL** from the latest verified backup into the staging database.
+   Record the start time and the backup timestamp used.
+3. **Restore metadata and secrets** from their verified backups into the staging
+   environment (secrets injected via the secret manager, never committed).
+4. **Verify integrity** by re-running the independent checksum verification against
+   the restored data set.
+5. **Application validation**: run migrations check, backend health/readiness
+   endpoints, and the smoke test suite against the restored stack.
+6. **Safe traffic cutover**: only after validation passes, shift traffic using the
+   documented cutover (DNS/load-balancer weight) with a rollback path ready.
+7. **Record measurements**: actual RTO (incident start → cutover complete) and
+   actual data loss (RPO gap between last verified backup and failure point).
+8. **Retain the report** in the staging restore-drill log, including pass/fail
+   against the objectives table above and any remediation actions.
+
+A drill only counts as passing when measured RTO and data loss are within the
+objectives table and the report is retained.
 
 ## Project Structure
 

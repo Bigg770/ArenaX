@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT\n                        id,\n                        proposal_id,\n                        target_contract,\n                        function,\n                        args,\n                        description,\n                        status as \"status: _\",\n                        proposer,\n                        created_at,\n                        execute_after,\n                        executed_at,\n                        last_chain_tx\n                    FROM governance_proposals\n                    WHERE status = $1\n                    ORDER BY created_at DESC\n                    LIMIT $2 OFFSET $3\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "proposal_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "target_contract",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "function",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "args",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "status: _",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "proposer",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "execute_after",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "executed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "last_chain_tx",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b3e4d4fe6835baa3f178cba7814cd15196bbf8d9b4df7894eff232d770b394db"
+}
