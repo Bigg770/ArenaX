@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT AVG(EXTRACT(EPOCH FROM (matched_at - joined_at))::INTEGER) as avg_wait_seconds\n        FROM matchmaking_queue\n        WHERE status = $1\n          AND matched_at IS NOT NULL\n          AND joined_at >= $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "avg_wait_seconds",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b5ed65c2ec361611f1e6e349d4220196ff542c97e2b02bb5bf77ee499e7c4547"
+}

@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            id,\n            username,\n            email,\n            skill_score,\n            fair_play_score,\n            anticheat_flags_count,\n            reputation_last_updated\n        FROM users\n        WHERE is_bad_actor = true\n        ORDER BY fair_play_score ASC, created_at DESC\n        LIMIT $1 OFFSET $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "email",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "skill_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "fair_play_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "anticheat_flags_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "reputation_last_updated",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2641941954daa2eb362327c8c917709790d0a024d65f455d21916d3dbbe6815b"
+}

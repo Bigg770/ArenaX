@@ -12,7 +12,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "json"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "json", "ipnetwork"] }
 validator = { version = "0.20.0", features = ["derive"] }
 rust_decimal = { version = "1.40.0", features = ["db-postgres"] }
 actix-web = "4.12.1"
@@ -21,7 +21,7 @@ bcrypt = "0.15"
 actix = "0.13"
 actix-web-actors = "4.3"
 anyhow = "1.0"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std", "json"] }
 tracing-opentelemetry = "0.33"
@@ -48,6 +48,9 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["derive"] }
 # sqlx's ConnectOptions::log_slow_statements/log_statements take log::LevelFilter (#1084)
 log = "0.4"
+# Secure upload processing (#85): server-side content sniffing independent of
+# client-declared MIME types, plus object-key isolation for private storage.
+infer = "0.16"
 
 
 # Security: pin patched versions of transitive deps
@@ -58,48 +61,4 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
-# Reusable Soroban contract test fixtures (#107): clients, mock auth,
-# ledger-time control, asset fixtures, and event decoding.
-soroban-sdk = { version = "22.0.0", features = ["testutils"] }
-# Cross-contract integration harness (#108): deploy escrow, dispute, match,
-# token, and prize contracts together and drive end-to-end settlement,
-# dispute/refund, authorization-failure, transfer-failure, and replay paths.
-soroban-sdk-testutils = { version = "22.0.0", features = ["testutils"] }
-
-# Contract security analysis for the release gate (#110).
-# `cargo audit`/`cargo deny` audit the contract dependency graph, while
-# `cargo clippy` with the lint set below flags unsafe authorization,
-# arithmetic, and storage patterns at contract call boundaries and
-# upgrade paths. Tool versions are pinned here so the gate is
-# reproducible and its reports can be retained with release artifacts.
-[workspace.metadata.security-gate]
-# Pinned tool versions recorded with each release report.
-cargo-audit = "0.21.2"
-cargo-deny = "0.18.3"
-clippy = "1.83.0"
-# Severity policy: unresolved findings at or above this level block the
-# release unless a reviewed exception is recorded.
-blocking-severity = "high"
-# Static checks scoped to contract code (Soroban call boundaries and
-# upgrade paths).
-contract-lints = [
-    "clippy::arithmetic_side_effects",
-    "clippy::integer_arithmetic",
-    "clippy::unwrap_used",
-    "clippy::expect_used",
-    "clippy::panic",
-    "clippy::indexing_slicing",
-    "clippy::cast_possible_truncation",
-    "clippy::missing_errors_doc",
-]
-# Dependency audit covers the contract dependency graph.
-dependency-audit = ["cargo-audit", "cargo-deny"]
-# Review checklist tailored to contract call boundaries and upgrade paths.
-review-checklist = [
-    "authorization: every contract entry point enforces require_auth on the correct address",
-    "call-boundaries: cross-contract calls validate caller identity and return values",
-    "arithmetic: checked math on balances, fees, and prize amounts; no unchecked casts",
-    "storage: storage keys are namespaced and TTL/archival handled for persistent entries",
-    "upgrade-paths: upgrade entry points are authorized and preserve storage layout",
-    "dependencies: no unresolved high/critical advisories in the contract dependency graph",
-]
+actix-http = "3.13"

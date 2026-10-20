@@ -372,6 +372,97 @@ pub async fn create_payment(
 ) -> Result<HttpResponse, Error> {
     // Idempotency handled by middleware
     // Business logic here
-    Ok(HttpResponse::Ok().json(response))
 }
 ```
+
+## 🔐 Least-Privilege API Threat Model
+
+This section makes trust boundaries and abuse cases explicit for ArenaX's gaming, financial, and blockchain flows. It is a living document: **update it whenever an API or custody boundary changes** (new endpoint, new signer, new payment rail, new upload sink).
+
+### Assets
+
+| Asset | Sensitivity | Where it lives |
+|-------|-------------|----------------|
+| User credentials / sessions | High | Auth service, session store |
+| Player identity & PII | High | `users` tables, profile APIs |
+| Match results & rankings | Medium | Match reporting APIs, DB |
+| Dispute records & evidence | High | Dispute APIs, object storage |
+| Payment intents & ledger entries | Critical | Payments service, ledger DB |
+| Custody keys / signer material | Critical | KMS / HSM, never in app DB |
+| On-chain contract admin authority | Critical | Multisig / timelock, admin keys |
+| Uploaded files (evidence, avatars) | Medium | Object storage, CDN |
+| Idempotency keys & cached responses | Medium | `idempotency_keys` table |
+
+### Actors
+
+- **Anonymous client** – unauthenticated caller.
+- **Authenticated player** – holds a session/token, owns their own resources.
+- **Match reporter / oracle** – submits match results (player or trusted service).
+- **Dispute participant** – player filing or responding to a dispute.
+- **Support / moderator** – elevated read + limited write on disputes.
+- **Finance operator** – initiates refunds/payouts, no direct key access.
+- **Contract admin** – holds multisig/timelock authority over on-chain contracts.
+- **Internal service** – service-to-service caller with scoped credentials.
+- **Attacker** – external or compromised low-privilege account.
+
+### Entry Points & Trust Transitions
+
+| Flow | Entry point | Trust transition |
+|------|-------------|------------------|
+| Auth | `POST /auth/login`, `/auth/refresh` | anonymous → authenticated session |
+| Match reporting | `POST /matches/{id}/report` | player/oracle → authoritative match result |
+| Disputes | `POST /disputes`, `POST /disputes/{id}/evidence` | participant → adjudicated outcome |
+| Payments | `POST /payments/create`, webhooks | client intent → ledger debit/credit |
+| Uploads | `POST /uploads` (presigned) | untrusted bytes → served content |
+| Contract admin | admin tx submission | operator intent → on-chain state change |
+
+### Mitigations Mapped to Code & Tests
+
+| Threat | Mitigation | Code | Tests |
+|--------|-----------|------|-------|
+| Credential stuffing / brute force | Rate limit + lockout on login | auth handlers | `auth` integration tests |
+| Session forgery / replay | Signed tokens, short TTL, refresh rotation | auth middleware | `auth` token tests |
+| Forged match reports | Authorize reporter role; server-side validation of result payload | match reporting handler | `matches` tests |
+| Duplicate match submission | Idempotency-Key required on report | `IdempotencyMiddleware` | `idempotency_integration` |
+| Dispute evidence tampering | Immutable evidence records + hash on upload | dispute handler, upload service | `disputes` tests |
+| Unauthorized dispute access | Object-level authz (owner/moderator only) | dispute handler | `disputes` authz tests |
+| Payment double-spend / replay | Idempotency + ledger uniqueness constraint | payments handler, ledger schema | `idempotency_integration`, ledger tests |
+| Webhook spoofing | Signature verification + timestamp window | webhook handler | webhook signature tests |
+| Malicious uploads (XSS, malware) | Content-type allowlist, size cap, served from isolated origin | upload service | upload validation tests |
+| Path traversal on upload keys | Server-generated object keys only | upload service | upload key tests |
+| Contract admin key compromise | Multisig + timelock; no single-key admin | on-chain contracts | contract admin tests |
+| Privilege escalation via admin APIs | Role checks on every admin route | admin middleware | admin authz tests |
+| Key/secret leakage | Secrets from env/KMS only; rotation runbook | config, `.env.example` | CI secret scan |
+
+### Accepted Residual Risks
+
+- **Idempotency cache stores response bodies** for up to TTL (24h). Accepted: bodies are hashed for integrity and expire automatically; no plaintext request bodies stored.
+- **Match reporting trusts the reporter's role** once authorized; collusion between reporter and player is out of scope for API-layer controls and handled by dispute process.
+- **Uploads are scanned best-effort**; zero-day malware in evidence files is an accepted risk mitigated by isolated serving origin.
+- **Contract admin relies on external multisig**; API cannot enforce signer policy beyond submitting transactions.
+
+### High-Risk Findings & Owners
+
+| Finding | Risk | Owner / Decision |
+|---------|------|------------------|
+| Webhook signature verification coverage | High | Payments owner — tracked, must be enforced before mainnet |
+| Admin route authz completeness | High | Platform security owner — audit each admin route |
+| Upload malware scanning depth | Medium | Infra owner — accepted with isolated origin |
+
+Each high-risk finding must have a linked issue or an explicit owner/decision recorded above before sign-off.
+
+### Maintenance & Review
+
+- Update this model in the same PR whenever an API endpoint, auth boundary, payment rail, upload sink, or custody/signer path changes.
+- Security review signs off against the misuse-case checklist below.
+
+### Misuse-Case Checklist (Security Review Sign-off)
+
+- [ ] Every new endpoint has an actor + trust transition documented.
+- [ ] Object-level authorization verified for player-owned resources.
+- [ ] Idempotency enforced on all financial and match-reporting writes.
+- [ ] Webhook signatures verified with replay window.
+- [ ] Uploads: allowlist, size cap, server-generated keys, isolated origin.
+- [ ] Admin/contract-admin actions require multisig/timelock or role check.
+- [ ] Residual risks reviewed and accepted explicitly.
+- [ ] High-risk findings have linked issues or named owners.

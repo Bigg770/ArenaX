@@ -9,6 +9,9 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 /// Maximum items allowed in a single batch call.
 /// Prevents out-of-gas / DoS exploits from unbounded loops.
 pub const MAX_BATCH_SIZE: u32 = 100;
+/// Conservative maximum encoded input size accepted by any batch endpoint.
+pub const MAX_BATCH_INPUT_BYTES: u32 = 16_384;
+const MAX_BATCH_ITEM_BYTES: u32 = 128;
 
 /// Maximum queue size for pending operations
 pub const MAX_QUEUE_SIZE: u32 = 500;
@@ -69,6 +72,10 @@ pub enum BatchError {
     InsufficientVotes = 21,
     /// Address is zero or a contract address.
     InvalidAddress = 22,
+    /// Encoded batch input exceeds the byte limit.
+    PayloadTooLarge = 23,
+    /// Checked arithmetic overflowed while validating a batch.
+    ArithmeticOverflow = 24,
 }
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
@@ -357,6 +364,10 @@ impl BatchOperations {
         Self::require_valid_address(&env, &submitter)?;
         submitter.require_auth();
 
+        if data.len() > MAX_BATCH_INPUT_BYTES {
+            return Err(BatchError::PayloadTooLarge);
+        }
+
         let queue_counter: u32 = env
             .storage()
             .instance()
@@ -619,32 +630,59 @@ impl BatchOperations {
             .get(&DataKey::Balance(from.clone()))
             .unwrap_or(0);
 
-        // Validate all amounts and total deduction before mutating any state.
+        // Validate amounts and compute the true net sender deduction first.
         let mut total_deduction: i128 = 0;
         for i in 0..n {
             let amt = amounts.get(i).unwrap();
             if amt <= 0 {
                 return Err(BatchError::InvalidAmount);
             }
-            total_deduction = total_deduction
-                .checked_add(amt)
-                .ok_or(BatchError::InvalidAmount)?;
+            if recipients.get(i).unwrap() != from {
+                total_deduction = total_deduction
+                    .checked_add(amt)
+                    .ok_or(BatchError::ArithmeticOverflow)?;
+            }
         }
         if from_balance < total_deduction {
             return Err(BatchError::InsufficientBalance);
         }
 
-        // Apply all transfers atomically.
+        // Preflight each unique recipient so all writes remain atomic.
+        for i in 0..n {
+            let to = recipients.get(i).unwrap();
+            if to == from || (0..i).any(|prior| recipients.get(prior).unwrap() == to) {
+                continue;
+            }
+            let mut aggregate = 0i128;
+            for j in i..n {
+                if recipients.get(j).unwrap() == to {
+                    aggregate = aggregate
+                        .checked_add(amounts.get(j).unwrap())
+                        .ok_or(BatchError::ArithmeticOverflow)?;
+                }
+            }
+            let recipient_balance: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::Balance(to.clone()))
+                .unwrap_or(0);
+            recipient_balance
+                .checked_add(aggregate)
+                .ok_or(BatchError::ArithmeticOverflow)?;
+        }
+
         from_balance -= total_deduction;
         for i in 0..n {
             let to = recipients.get(i).unwrap();
-            let amt = amounts.get(i).unwrap();
-
-            // Skip self-transfers without aborting (balance math is already correct).
-            if to == from {
+            if to == from || (0..i).any(|prior| recipients.get(prior).unwrap() == to) {
                 continue;
             }
-
+            let mut aggregate = 0i128;
+            for j in i..n {
+                if recipients.get(j).unwrap() == to {
+                    aggregate += amounts.get(j).unwrap();
+                }
+            }
             let to_balance: i128 = env
                 .storage()
                 .instance()
@@ -652,7 +690,7 @@ impl BatchOperations {
                 .unwrap_or(0);
             env.storage()
                 .instance()
-                .set(&DataKey::Balance(to), &(to_balance + amt));
+                .set(&DataKey::Balance(to), &(to_balance + aggregate));
         }
         env.storage()
             .instance()
@@ -681,37 +719,77 @@ impl BatchOperations {
         let n = recipients.len();
         Self::validate_batch(n, amounts.len())?;
 
-        // Validate all amounts up front (fail-fast, no partial state).
+        // Validate all amounts and supply growth before mutating state.
+        let mut total_mint = 0i128;
         for i in 0..n {
-            if amounts.get(i).unwrap() <= 0 {
+            let amount = amounts.get(i).unwrap();
+            if amount <= 0 {
                 return Err(BatchError::InvalidAmount);
             }
+            Self::require_valid_address(&env, &recipients.get(i).unwrap())?;
+            total_mint = total_mint
+                .checked_add(amount)
+                .ok_or(BatchError::ArithmeticOverflow)?;
         }
 
-        // Cache total_supply once — single read, single write.
-        let mut supply: i128 = env
+        let supply: i128 = env
             .storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
+        let new_supply = supply
+            .checked_add(total_mint)
+            .ok_or(BatchError::ArithmeticOverflow)?;
+
+        // Preflight aggregated recipient balances before any writes.
+        for i in 0..n {
+            let to = recipients.get(i).unwrap();
+            if (0..i).any(|prior| recipients.get(prior).unwrap() == to) {
+                continue;
+            }
+            let mut aggregate = 0i128;
+            for j in i..n {
+                if recipients.get(j).unwrap() == to {
+                    aggregate = aggregate
+                        .checked_add(amounts.get(j).unwrap())
+                        .ok_or(BatchError::ArithmeticOverflow)?;
+                }
+            }
+            let balance: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::Balance(to.clone()))
+                .unwrap_or(0);
+            balance
+                .checked_add(aggregate)
+                .ok_or(BatchError::ArithmeticOverflow)?;
+        }
 
         for i in 0..n {
             let to = recipients.get(i).unwrap();
-            let amt = amounts.get(i).unwrap();
-
-            let bal: i128 = env
+            if (0..i).any(|prior| recipients.get(prior).unwrap() == to) {
+                continue;
+            }
+            let mut aggregate = 0i128;
+            for j in i..n {
+                if recipients.get(j).unwrap() == to {
+                    aggregate += amounts.get(j).unwrap();
+                }
+            }
+            let balance: i128 = env
                 .storage()
                 .instance()
                 .get(&DataKey::Balance(to.clone()))
                 .unwrap_or(0);
             env.storage()
                 .instance()
-                .set(&DataKey::Balance(to), &(bal + amt));
-            supply += amt;
+                .set(&DataKey::Balance(to), &(balance + aggregate));
         }
 
         // Single write for supply — avoids n storage writes.
-        env.storage().instance().set(&DataKey::TotalSupply, &supply);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &new_supply);
 
         // Update analytics
         Self::record_analytics(&env, n, 2);
@@ -736,12 +814,7 @@ impl BatchOperations {
         player.require_auth();
 
         let n = tournament_ids.len();
-        if n == 0 {
-            return Err(BatchError::EmptyBatch);
-        }
-        if n > MAX_BATCH_SIZE {
-            return Err(BatchError::BatchTooLarge);
-        }
+        Self::validate_batch(n, n)?;
 
         let mut results: Vec<ItemResult> = Vec::new(&env);
 
@@ -800,24 +873,66 @@ impl BatchOperations {
         let n = players.len();
         Self::validate_batch(n, deltas.len())?;
 
-        // Validate all deltas before writing (full atomicity).
+        // Validate individual deltas before computing per-player totals.
         for i in 0..n {
             if deltas.get(i).unwrap() == 0 {
                 return Err(BatchError::InvalidDelta);
             }
         }
 
+        // Preflight each unique player; duplicate deltas are combined.
         for i in 0..n {
             let player = players.get(i).unwrap();
-            let delta = deltas.get(i).unwrap();
+            if (0..i).any(|prior| players.get(prior).unwrap() == player) {
+                continue;
+            }
+            let mut aggregate = 0i128;
+            for j in i..n {
+                if players.get(j).unwrap() == player {
+                    aggregate = aggregate
+                        .checked_add(deltas.get(j).unwrap())
+                        .ok_or(BatchError::ArithmeticOverflow)?;
+                }
+            }
 
             let current: i128 = env
                 .storage()
                 .instance()
                 .get(&DataKey::Reputation(player.clone()))
                 .unwrap_or(0);
+            if aggregate > 0 {
+                current
+                    .checked_add(aggregate)
+                    .ok_or(BatchError::ArithmeticOverflow)?;
+            }
+        }
 
-            let new_score = current.saturating_add(delta).max(0);
+        for i in 0..n {
+            let player = players.get(i).unwrap();
+            if (0..i).any(|prior| players.get(prior).unwrap() == player) {
+                continue;
+            }
+            let mut aggregate = 0i128;
+            for j in i..n {
+                if players.get(j).unwrap() == player {
+                    aggregate = aggregate
+                        .checked_add(deltas.get(j).unwrap())
+                        .expect("preflighted reputation aggregate overflow");
+                }
+            }
+            let current: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::Reputation(player.clone()))
+                .unwrap_or(0);
+            let new_score = if aggregate < 0 && aggregate.saturating_abs() > current {
+                0
+            } else {
+                current
+                    .checked_add(aggregate)
+                    .expect("preflighted reputation score overflow")
+                    .max(0)
+            };
             env.storage()
                 .instance()
                 .set(&DataKey::Reputation(player), &new_score);
@@ -846,12 +961,7 @@ impl BatchOperations {
         Self::require_admin(&env)?;
 
         let n = achievement_ids.len();
-        if n == 0 {
-            return Err(BatchError::EmptyBatch);
-        }
-        if n > MAX_BATCH_SIZE {
-            return Err(BatchError::BatchTooLarge);
-        }
+        Self::validate_batch(n, n)?;
 
         // Single storage read for the entire achievement set.
         let mut mask: u64 = env
@@ -914,12 +1024,7 @@ impl BatchOperations {
         Self::require_admin(&env)?;
 
         let n = owners.len();
-        if n == 0 {
-            return Err(BatchError::EmptyBatch);
-        }
-        if n > MAX_BATCH_SIZE {
-            return Err(BatchError::BatchTooLarge);
-        }
+        Self::validate_batch(n, n)?;
 
         // Load count once.
         let mut next_id: u32 = env
@@ -977,6 +1082,13 @@ impl BatchOperations {
         }
         if len_a > MAX_BATCH_SIZE {
             return Err(BatchError::BatchTooLarge);
+        }
+        if len_a
+            .checked_mul(MAX_BATCH_ITEM_BYTES)
+            .ok_or(BatchError::PayloadTooLarge)?
+            > MAX_BATCH_INPUT_BYTES
+        {
+            return Err(BatchError::PayloadTooLarge);
         }
         Ok(())
     }

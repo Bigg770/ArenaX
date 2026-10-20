@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                COUNT(*) as total_transactions,\n                COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_transactions,\n                COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_transactions,\n                COUNT(CASE WHEN status = 'retried' THEN 1 END) as retried_transactions,\n                COUNT(CASE WHEN status = 'rolled_back' THEN 1 END) as rolled_back_transactions,\n                AVG(duration_ms) as avg_duration_ms,\n                MAX(duration_ms) as max_duration_ms,\n                MIN(duration_ms) as min_duration_ms,\n                AVG(retry_count) as avg_retry_count\n            FROM transaction_monitor\n            WHERE started_at >= $1 AND started_at <= $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_transactions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "completed_transactions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "failed_transactions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "retried_transactions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "rolled_back_transactions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "avg_duration_ms",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "max_duration_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "min_duration_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "avg_retry_count",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "e87cdafb8f73a48fdab57175f49b4b3da0afefed7b725daddf3feec7961e6ed8"
+}

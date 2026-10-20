@@ -4,11 +4,9 @@ use crate::middleware::idempotency_middleware::IdempotencyMiddleware;
 use crate::models::idempotency::IdempotencyPolicy;
 use actix_web::{web, HttpResponse, Result};
 use serde_json::json;
-use std::time::Duration;
 
 /// Apply idempotency middleware to specific routes
 pub fn configure_idempotency_middleware(cfg: &mut web::ServiceConfig, db_pool: DbPool) {
-    let policy = IdempotencyPolicy::default();
     let middleware = IdempotencyMiddleware::default(db_pool);
 
     // Apply middleware to all routes (the middleware will filter internally)
@@ -173,6 +171,7 @@ pub async fn performance_test(
     for i in 0..count {
         let key = format!("test_key_{}_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0), i);
         let placeholder_response = crate::models::idempotency::CachedResponse::new(
+            format!("hash_{}", i),
             200,
             json!({}),
             json!({})
@@ -211,8 +210,6 @@ pub struct PerformanceTestQuery {
 pub async fn cleanup_test_data(
     db_pool: web::Data<DbPool>,
 ) -> Result<HttpResponse> {
-    let service = crate::service::idempotency_service::IdempotencyService::default(db_pool.as_ref().clone());
-    
     // Clean up test keys
     let result = sqlx::query!(
         "DELETE FROM idempotency_keys WHERE key LIKE 'test_key_%'"

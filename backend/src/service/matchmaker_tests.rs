@@ -2,6 +2,7 @@ use crate::service::matchmaker::{MatchmakerService, EloEngine, MatchmakingConfig
 use crate::models::matchmaker::*;
 use crate::db::DbPool;
 use redis::Client;
+use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -12,18 +13,23 @@ mod tests {
     use super::*;
     use tokio_test;
 
-    fn create_test_config() -> MatchmakingConfig {
+    pub(crate) fn create_test_config() -> MatchmakingConfig {
         MatchmakingConfig {
             elo_bucket_size: 100,
             max_elo_gap: 500,
-            expansion_intervals: vec![30, 60, 120, 300],
-            max_wait_time: 600,
+            expansion_intervals: vec![
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(300),
+            ],
+            max_wait_time: std::time::Duration::from_secs(600),
             min_players_per_match: 2,
             max_players_per_match: 2,
         }
     }
 
-    async fn setup_test_db() -> DbPool {
+    pub(crate) async fn setup_test_db() -> DbPool {
         // Create test database connection
         let database_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgresql://test:test@localhost/arenax_test".to_string());
@@ -33,34 +39,35 @@ mod tests {
             .expect("Failed to create test database pool")
     }
 
-    async fn setup_test_redis() -> Client {
+    pub(crate) async fn setup_test_redis() -> ConnectionManager {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .unwrap_or_else(|_| "redis://localhost".to_string());
         
-        Client::open(redis_url)
-            .expect("Failed to create test Redis client")
+        let client = Client::open(redis_url)
+            .expect("Failed to create test Redis client");
+        client.get_connection_manager().await
+            .expect("Failed to create test Redis connection manager")
     }
 
-    async fn cleanup_test_data(db_pool: &DbPool, redis_client: &Client) {
+    pub(crate) async fn cleanup_test_data(db_pool: &DbPool, redis_client: &ConnectionManager) {
         // Clean up test data
-        sqlx::query!("DELETE FROM matchmaking_queue WHERE user_id LIKE 'test-%'")
+        sqlx::query!("DELETE FROM matchmaking_queue WHERE user_id::text LIKE 'test-%'")
             .execute(db_pool)
             .await
             .ok();
 
-        sqlx::query!("DELETE FROM matches WHERE player1_id LIKE 'test-%'")
+        sqlx::query!("DELETE FROM matches WHERE player1_id::text LIKE 'test-%'")
             .execute(db_pool)
             .await
             .ok();
 
-        sqlx::query!("DELETE FROM user_elo WHERE user_id LIKE 'test-%'")
+        sqlx::query!("DELETE FROM user_elo WHERE user_id::text LIKE 'test-%'")
             .execute(db_pool)
             .await
             .ok();
 
         // Clean up Redis
-        let mut conn = redis_client.get_multiplexed_async_connection().await
-            .expect("Failed to get Redis connection");
+        let mut conn = redis_client.clone();
         
         let pattern = "queue:test-*";
         let keys: Vec<String> = redis::cmd("KEYS")
@@ -72,7 +79,7 @@ mod tests {
         for key in keys {
             redis::cmd("DEL")
                 .arg(&key)
-                .query_async::<_, ()>(&mut conn)
+                .query_async::<()>(&mut conn)
                 .await
                 .ok();
         }
@@ -120,8 +127,7 @@ mod tests {
         // Add user to queue
         matchmaker.add_to_queue(user_id, game.clone(), game_mode.clone(), current_elo).await.unwrap();
 
-        // Remove from queue
-        let mut conn = redis_client.get_multiplexed_async_connection().await.unwrap();
+        let mut conn = redis_client.clone();
         let result = matchmaker.remove_from_queue(&mut conn, &user_id, &game, &game_mode).await;
         assert!(result.is_ok());
 
@@ -428,13 +434,12 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use super::tests::*;
     use actix_web::{test, web, App};
     use crate::http::matchmaking::*;
-    use crate::auth::{JwtService, Claims};
-    use crate::middleware::auth_middleware::JwtMiddleware;
 
     async fn setup_test_app() -> impl actix_web::dev::Service<
-        actix_web::dev::ServiceRequest,
+        actix_http::Request,
         Response = actix_web::dev::ServiceResponse,
         Error = actix_web::Error,
     > {

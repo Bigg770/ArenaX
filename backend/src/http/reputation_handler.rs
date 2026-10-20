@@ -7,8 +7,9 @@
 
 use crate::api_error::ApiError;
 use crate::models::{ApiResponse, PaginatedResponse, PaginationParams};
-use crate::service::reputation_service::{PlayerReputation, ReputationService};
+use crate::service::reputation_service::PlayerReputation;
 use actix_web::{web, HttpResponse};
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,6 +19,7 @@ pub struct ReputationResponse {
     pub user_id: Uuid,
     pub skill_score: i32,
     pub fair_play_score: i32,
+    pub scoring_version: i32,
     pub is_bad_actor: bool,
     pub tier: String,
     pub last_updated: Option<String>,
@@ -38,6 +40,7 @@ impl From<PlayerReputation> for ReputationResponse {
             user_id: rep.user_id,
             skill_score: rep.skill_score,
             fair_play_score: rep.fair_play_score,
+            scoring_version: rep.scoring_version,
             is_bad_actor: rep.is_bad_actor,
             tier: tier_str.to_string(),
             last_updated: Some(rep.last_update_ts.to_string()),
@@ -53,7 +56,9 @@ pub struct ReputationEventResponse {
     pub event_type: String,
     pub skill_delta: i32,
     pub fair_play_delta: i32,
+    pub scoring_version: i32,
     pub match_id: Option<Uuid>,
+    pub match_authority_id: Option<Uuid>,
     pub transaction_hash: Option<String>,
     pub created_at: String,
 }
@@ -72,8 +77,9 @@ pub async fn get_player_reputation(
             id as user_id,
             COALESCE(skill_score, 1000) as skill_score,
             COALESCE(fair_play_score, 100) as fair_play_score,
+            reputation_scoring_version as scoring_version,
             reputation_last_updated,
-            COALESCE(is_bad_actor, false) as is_bad_actor
+            COALESCE(is_bad_actor, false) as "is_bad_actor!"
         FROM users
         WHERE id = $1
         "#,
@@ -88,6 +94,7 @@ pub async fn get_player_reputation(
         user_id: reputation.user_id,
         skill_score: reputation.skill_score,
         fair_play_score: reputation.fair_play_score,
+        scoring_version: reputation.scoring_version,
         last_update_ts: reputation
             .reputation_last_updated
             .map(|t| t.timestamp() as u64)
@@ -95,14 +102,15 @@ pub async fn get_player_reputation(
         is_bad_actor: reputation.is_bad_actor,
     };
 
-    Ok(HttpResponse::Ok().json(ApiResponse::success(reputation)))
+    Ok(HttpResponse::Ok().json(ApiResponse::success(rep)))
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 struct PlayerReputationData {
     user_id: Uuid,
     skill_score: i32,
     fair_play_score: i32,
+    scoring_version: i32,
     reputation_last_updated: Option<chrono::DateTime<chrono::Utc>>,
     is_bad_actor: bool,
 }
@@ -121,8 +129,9 @@ pub async fn get_my_reputation(
             id as user_id,
             COALESCE(skill_score, 1000) as skill_score,
             COALESCE(fair_play_score, 100) as fair_play_score,
+            reputation_scoring_version as scoring_version,
             reputation_last_updated,
-            COALESCE(is_bad_actor, false) as is_bad_actor
+            COALESCE(is_bad_actor, false) as "is_bad_actor!"
         FROM users
         WHERE id = $1
         "#,
@@ -136,6 +145,7 @@ pub async fn get_my_reputation(
         user_id: reputation.user_id,
         skill_score: reputation.skill_score,
         fair_play_score: reputation.fair_play_score,
+        scoring_version: reputation.scoring_version,
         last_update_ts: reputation
             .reputation_last_updated
             .map(|t| t.timestamp() as u64)
@@ -173,9 +183,11 @@ pub async fn get_reputation_history(
             event_type,
             skill_delta,
             fair_play_delta,
+            scoring_version,
             match_id,
+            match_authority_id,
             transaction_hash,
-            created_at::text
+            created_at::text as "created_at!"
         FROM reputation_events
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -297,8 +309,8 @@ pub async fn get_reputation_stats(
         "bad_actors_count": stats.bad_actors_count.unwrap_or(0),
         "low_fair_play_count": stats.low_fair_play_count.unwrap_or(0),
         "high_skill_count": stats.high_skill_count.unwrap_or(0),
-        "avg_skill": stats.avg_skill.unwrap_or(1000.0),
-        "avg_fair_play": stats.avg_fair_play.unwrap_or(100.0)
+        "avg_skill": stats.avg_skill.and_then(|d| d.to_f64()).unwrap_or(1000.0),
+        "avg_fair_play": stats.avg_fair_play.and_then(|d| d.to_f64()).unwrap_or(100.0)
     });
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))

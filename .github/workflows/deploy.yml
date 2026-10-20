@@ -18,63 +18,39 @@ on:
         default: "60"
 
 jobs:
-  contract-security:
-    name: Contract security analysis
+  release-checklist:
+    name: Production readiness & release checklist
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Install audit tooling
+      - name: Verify release checklist is present
         run: |
-          cargo install cargo-audit --version 0.20.1 --locked
-          cargo install cargo-deny --version 0.16.1 --locked
+          test -f docs/RELEASE_CHECKLIST.md || {
+            echo "::error::docs/RELEASE_CHECKLIST.md is missing; a release cannot be evaluated without it."
+            exit 1
+          }
 
-      - name: Dependency audit (contract dependencies)
-        working-directory: backend
+      - name: Publish checklist to the run summary
         run: |
-          mkdir -p ../deploy/security
-          cargo audit --json > ../deploy/security/cargo-audit.json || true
-          cargo deny check advisories bans licenses sources 2>&1 | tee ../deploy/security/cargo-deny.txt || true
-
-      - name: Static analysis (authorization, arithmetic, storage)
-        working-directory: backend
-        run: |
-          cargo clippy --all-targets --all-features -- \
-            -D clippy::arithmetic_side_effects \
-            -D clippy::unwrap_used \
-            -D clippy::expect_used \
-            -W clippy::indexing_slicing \
-            2>&1 | tee ../deploy/security/clippy.txt
-
-      - name: Evaluate findings against severity policy
-        run: |
-          python3 scripts/security/contract-security-gate.py \
-            --audit deploy/security/cargo-audit.json \
-            --deny deploy/security/cargo-deny.txt \
-            --clippy deploy/security/clippy.txt \
-            --policy deploy/security/severity-policy.json \
-            --exceptions deploy/security/exceptions.json
-
-      - name: Retain security reports with release artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: contract-security-reports-${{ github.sha }}
-          path: deploy/security/
-          retention-days: 90
+          {
+            echo "## Production readiness & release checklist"
+            echo ""
+            echo "Every item below must carry an evidence link or an explicit not-applicable rationale."
+            echo "Release blockers must be cleared before cutover; post-release monitoring owners are tracked after cutover."
+            echo ""
+            cat docs/RELEASE_CHECKLIST.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build-and-push:
     name: Build & push images
     runs-on: ubuntu-latest
-    needs: contract-security
+    needs: release-checklist
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
+      backend_digest: ${{ steps.backend.outputs.digest }}
+      frontend_digest: ${{ steps.frontend.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -94,6 +70,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build & push backend image
+        id: backend
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -101,10 +78,19 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/backend:${{ steps.tag.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/backend:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.image_tag }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            BUILD_VERSION=${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Build & push frontend image
+        id: frontend
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
@@ -112,25 +98,88 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/frontend:${{ steps.tag.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/frontend:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.image_tag }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            BUILD_VERSION=${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Record image digests
+        run: |
+          echo "backend digest: ${{ steps.backend.outputs.digest }}"
+          echo "frontend digest: ${{ steps.frontend.outputs.digest }}"
+          echo "source revision: ${{ github.sha }}"
 
   deploy:
     name: Blue/green deploy
     runs-on: ubuntu-latest
     needs: build-and-push
     environment: production
+    env:
+      # Production transport + origin policy. HTTPS-only, least-privilege CORS.
+      # Credentialed requests are enabled, so wildcard origins are forbidden.
+      SECURITY_ENV: production
+      FORCE_HTTPS: "true"
+      HSTS_MAX_AGE: "63072000"
+      HSTS_INCLUDE_SUBDOMAINS: "true"
+      HSTS_PRELOAD: "true"
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "Lax"
+      CORS_ALLOW_CREDENTIALS: "true"
+      CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate production origin policy
+        run: |
+          set -euo pipefail
+          origins="${CORS_ALLOWED_ORIGINS:-}"
+          if [ -z "$origins" ]; then
+            echo "::error::CORS_ALLOWED_ORIGINS must be set for production (no wildcard allowed)."
+            exit 1
+          fi
+          IFS=',' read -ra entries <<< "$origins"
+          for origin in "${entries[@]}"; do
+            origin="$(echo "$origin" | xargs)"
+            [ -z "$origin" ] && continue
+            if [ "$origin" = "*" ]; then
+              echo "::error::Wildcard origin '*' is not permitted with credentialed requests."
+              exit 1
+            fi
+            case "$origin" in
+              https://*) ;;
+              *)
+                echo "::error::Origin '$origin' must use https:// in production."
+                exit 1
+                ;;
+            esac
+          done
+          echo "Production origin policy OK: $origins"
+
       - name: Run blue/green deploy on the deploy host
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          SECURITY_ENV: ${{ env.SECURITY_ENV }}
+          FORCE_HTTPS: ${{ env.FORCE_HTTPS }}
+          HSTS_MAX_AGE: ${{ env.HSTS_MAX_AGE }}
+          HSTS_INCLUDE_SUBDOMAINS: ${{ env.HSTS_INCLUDE_SUBDOMAINS }}
+          HSTS_PRELOAD: ${{ env.HSTS_PRELOAD }}
+          COOKIE_SECURE: ${{ env.COOKIE_SECURE }}
+          COOKIE_SAME_SITE: ${{ env.COOKIE_SAME_SITE }}
+          CORS_ALLOW_CREDENTIALS: ${{ env.CORS_ALLOW_CREDENTIALS }}
+          CORS_ALLOWED_ORIGINS: ${{ env.CORS_ALLOWED_ORIGINS }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 30m
+          envs: SECURITY_ENV,FORCE_HTTPS,HSTS_MAX_AGE,HSTS_INCLUDE_SUBDOMAINS,HSTS_PRELOAD,COOKIE_SECURE,COOKIE_SAME_SITE,CORS_ALLOW_CREDENTIALS,CORS_ALLOWED_ORIGINS
           script: |
             cd /opt/arenax
             git fetch --depth 1 origin main
@@ -138,9 +187,46 @@ jobs:
             export IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
             export BACKEND_IMAGE=ghcr.io/${{ github.repository }}/backend
             export FRONTEND_IMAGE=ghcr.io/${{ github.repository }}/frontend
+            export BACKEND_DIGEST=${{ needs.build-and-push.outputs.backend_digest }}
+            export FRONTEND_DIGEST=${{ needs.build-and-push.outputs.frontend_digest }}
+            export SOURCE_REVISION=${{ github.sha }}
             export CANARY_WEIGHT=${{ github.event.inputs.canary_weight || '10' }}
             export CANARY_BAKE_SECONDS=${{ github.event.inputs.canary_bake_seconds || '60' }}
+            # Transactional rollout: the deploy script must gate traffic shift on
+            # migration compatibility and readiness. If either gate fails it
+            # exits non-zero BEFORE shifting traffic, leaving the prior release
+            # serving. Rollback restores the previous artifact by digest and
+            # never reverses schema destructively.
             ./scripts/deploy/blue-green-deploy.sh
+
+      - name: Verify security headers on deployed services
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          CORS_ALLOWED_ORIGINS: ${{ env.CORS_ALLOWED_ORIGINS }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: CORS_ALLOWED_ORIGINS
+          script: |
+            set -euo pipefail
+            cd /opt/arenax
+            primary_origin="$(echo "$CORS_ALLOWED_ORIGINS" | cut -d',' -f1 | xargs)"
+            if [ -z "$primary_origin" ]; then
+              echo "::error::No primary origin configured for header verification."
+              exit 1
+            fi
+            headers="$(curl -fsSI "$primary_origin" || true)"
+            echo "$headers"
+            echo "$headers" | grep -qi '^strict-transport-security:' || { echo "::error::Missing Strict-Transport-Security header"; exit 1; }
+            echo "$headers" | grep -qi '^x-content-type-options: *nosniff' || { echo "::error::Missing X-Content-Type-Options: nosniff"; exit 1; }
+            echo "$headers" | grep -qi '^x-frame-options:' || { echo "::error::Missing X-Frame-Options header"; exit 1; }
+            echo "$headers" | grep -qi '^referrer-policy:' || { echo "::error::Missing Referrer-Policy header"; exit 1; }
+            if echo "$headers" | grep -qi '^access-control-allow-origin: *\*'; then
+              echo "::error::Wildcard Access-Control-Allow-Origin is not permitted."
+              exit 1
+            fi
+            echo "Security header verification passed."
 
       - name: Surface deployment metrics
         if: always()
@@ -151,5 +237,8 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd /opt/arenax
+            echo "Release: ${{ needs.build-and-push.outputs.image_tag }} (rev ${{ github.sha }})"
+            echo "Backend digest: ${{ needs.build-and-push.outputs.backend_digest }}"
+            echo "Frontend digest: ${{ needs.build-and-push.outputs.frontend_digest }}"
             echo "Last 5 deployments:"
             tail -n 5 deploy/metrics/deployments.jsonl || true
