@@ -1,0 +1,144 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE tournaments\n            SET status = $1, updated_at = $2\n            WHERE id = $3\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "max_participants",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "entry_fee",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "entry_fee_currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "prize_pool",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "prize_pool_currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "start_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "end_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "registration_deadline",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "bracket_type",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "rules",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 18,
+        "name": "min_skill_level",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 19,
+        "name": "max_skill_level",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 20,
+        "name": "cleaned_up_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "606fde3dc18f4788ab55c747a01b4ca84af5fa8dd1428361631fa76634872e5d"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COALESCE(\n                (SUM(avg_session_secs * matches_played)::float / NULLIF(SUM(matches_played), 0))::bigint,\n                0\n            ) AS \"avg_secs!: i64\"\n            FROM analytics_player_behaviour\n            WHERE user_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "avg_secs!: i64",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "26a9d6c5c4b41cc254253d512abb70e1777611066f59811a4a184fa6fdd83d4f"
+}

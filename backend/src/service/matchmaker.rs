@@ -26,25 +26,7 @@ const EXPANSION_INTERVALS: &[Duration] = &[
     Duration::from_secs(300),
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueueEntry {
-    pub user_id: Uuid,
-    pub game: String,
-    pub game_mode: String,
-    pub current_elo: i32,
-    pub min_elo: i32,
-    pub max_elo: i32,
-    pub joined_at: DateTime<Utc>,
-    pub wait_time_multiplier: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchCandidate {
-    pub player1: QueueEntry,
-    pub player2: QueueEntry,
-    pub match_quality: f64,
-    pub elo_gap: i32,
-}
+pub use crate::models::matchmaker::{MatchCandidate, QueueEntry};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchmakingConfig {
@@ -91,6 +73,14 @@ impl MatchmakerService {
     /// multiplexed connection.
     pub fn redis_conn(&self) -> RedisConn {
         self.redis.clone()
+    }
+
+    pub fn calculate_match_quality(&self, player1: &QueueEntry, player2: &QueueEntry, elo_gap: i32) -> f64 {
+        calculate_match_quality(player1, player2, elo_gap)
+    }
+
+    pub fn calculate_max_elo_gap(&self, entry: &QueueEntry) -> i32 {
+        calculate_max_elo_gap(entry)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -767,7 +757,7 @@ impl EloEngine {
             .map_err(|e| ApiError::database_error(e))?;
 
         let (new_elo1, new_elo2) = self.calculate_elo_change(
-            match_record.player1_elo_before,
+            match_record.player1_elo_before.unwrap_or(1200),
             match_record.player2_elo_before.unwrap_or(1200),
             winner_id,
             match_record.player1_id,
@@ -802,7 +792,7 @@ impl EloEngine {
             db_pool,
             match_record.player1_id,
             &match_record.game_mode,
-            match_record.player1_elo_before,
+            match_record.player1_elo_before.unwrap_or(1200),
             new_elo1,
             match_id,
         )
@@ -832,15 +822,18 @@ impl EloEngine {
         new_elo: i32,
         match_id: Uuid,
     ) -> Result<(), ApiError> {
+        let change = new_elo - old_elo;
+        let result = if change > 0 { 0 } else if change < 0 { 1 } else { 2 };
         sqlx::query!(
-            "INSERT INTO elo_history (user_id, game, old_rating, new_rating, change_amount, match_id, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO elo_history (user_id, game, match_id, rating_before, rating_after, rating_change, result, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             user_id,
             game,
+            match_id,
             old_elo,
             new_elo,
-            new_elo - old_elo,
-            match_id,
+            change,
+            result,
             Utc::now()
         )
         .execute(db_pool)

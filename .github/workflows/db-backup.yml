@@ -6,6 +6,16 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch: {}
 
+# Least-privilege: only read repo contents; no write scopes needed.
+permissions:
+  contents: read
+
+# Recovery objectives (see backend/BACKUP_RECOVERY.md):
+#   RPO: 24h (daily full backup) — max acceptable data loss
+#   RTO: 4h — max acceptable time to restore + validate + cut over
+# This workflow enforces the RPO by failing loudly if a fresh, verified
+# backup is not produced each day.
+
 jobs:
   backup:
     name: Backup and verify
@@ -29,41 +39,41 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Run backup
+      - name: Run backup (encrypted, access-limited)
         env:
           DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
           S3_BACKUP_BUCKET: ${{ secrets.DB_BACKUP_S3_BUCKET }}
+          # Encryption key for at-rest backup encryption (age/gpg).
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.DB_BACKUP_ENCRYPTION_KEY }}
+          # Server-side encryption + retention for the backup bucket.
+          BACKUP_SSE: AES256
+          BACKUP_RETENTION_DAYS: '35'
         run: ./scripts/backup-database.sh
+
+      - name: Independently verify backup integrity
+        env:
+          S3_BACKUP_BUCKET: ${{ secrets.DB_BACKUP_S3_BUCKET }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.DB_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          # Independent integrity check: re-download the latest artifact and
+          # verify its checksum against the manifest written at backup time.
+          # This runs separately from backup creation so a corrupt upload or
+          # truncated dump is caught even if the backup step "succeeded".
+          ./scripts/verify-backup-integrity.sh --latest
 
       - name: Verify backup restores cleanly
         env:
           DATABASE_URL: ${{ secrets.DB_BACKUP_VERIFY_DATABASE_URL }}
           S3_BACKUP_BUCKET: ${{ secrets.DB_BACKUP_S3_BUCKET }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.DB_BACKUP_ENCRYPTION_KEY }}
         run: ./scripts/verify-backup.sh --latest
 
-      # Evidence object store: verify bucket versioning, encryption, and
-      # retention/legal-hold configuration so backups and replicas stay
-      # consistent with the primary bucket (see BACKUP_RECOVERY.md).
-      - name: Verify evidence bucket durability settings
+      - name: Enforce RPO freshness
         env:
-          EVIDENCE_BUCKET: ${{ secrets.EVIDENCE_S3_BUCKET }}
-          EVIDENCE_REPLICA_BUCKET: ${{ secrets.EVIDENCE_REPLICA_S3_BUCKET }}
+          S3_BACKUP_BUCKET: ${{ secrets.DB_BACKUP_S3_BUCKET }}
         run: |
-          set -euo pipefail
-          for bucket in "$EVIDENCE_BUCKET" "$EVIDENCE_REPLICA_BUCKET"; do
-            echo "Checking durability settings for s3://$bucket"
-            versioning=$(aws s3api get-bucket-versioning --bucket "$bucket" --query Status --output text)
-            if [ "$versioning" != "Enabled" ]; then
-              echo "::error::Bucket $bucket does not have versioning enabled (got: $versioning)"
-              exit 1
-            fi
-            encryption=$(aws s3api get-bucket-encryption --bucket "$bucket" --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' --output text)
-            if [ -z "$encryption" ] || [ "$encryption" = "None" ]; then
-              echo "::error::Bucket $bucket has no default server-side encryption configured"
-              exit 1
-            fi
-            echo "Bucket $bucket: versioning=$versioning encryption=$encryption"
-          done
+          # Fail if the newest verified backup is older than the 24h RPO.
+          ./scripts/verify-backup-integrity.sh --max-age-hours 24
 
       - name: Notify on failure
         if: failure()

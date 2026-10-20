@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT user_id, game_id, matches_played, wins, avg_session_secs, last_active\n            FROM analytics_player_behaviour\n            WHERE user_id = $1 AND game_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "game_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "matches_played",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "wins",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "avg_session_secs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_active",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ffae6e35f8d0e7a585f5a7742c6af9c789f1e8dac33d3e5e01e2de53edb77b03"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE wallets\n                    SET balance_arenax_tokens = balance_arenax_tokens + $1, updated_at = $2\n                    WHERE user_id = $3\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec7fa9d303f397c7b677fee6b027a18eedf4f9d0b7cee7b96f6cf0a22be58957"
+}

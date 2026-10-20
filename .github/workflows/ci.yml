@@ -2,24 +2,146 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev, develop]
   pull_request:
-  schedule:
-    - cron: '0 6 * * 1'
+    branches: [main, dev, develop]
 
 jobs:
-  build:
+  secret-scan:
+    name: Secret scan (current content + history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          node-version: 20
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
+          fetch-depth: 0
 
-  query-plans:
+      - name: Scan current content and history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMITS: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Check PWA assets
+      run: npm run check:pwa-assets
+
+    - name: Lint code
+      run: npm run lint
+
+    - name: Type check
+      run: npx tsc --noEmit
+
+    - name: Run tests
+      run: npm test -- --ci --forceExit --passWithNoTests
+
+  # Smart Contracts CI — Reproducible & blocking builds (#51)
+  contracts:
+    name: Contracts (Soroban)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-contracts-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace
+
+      - name: Build optimized Wasm contracts
+        run: cargo build --locked --workspace --target wasm32-unknown-unknown --release
+
+      - name: Generate release artifact metadata
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          ./scripts/build-release-artifacts.sh
+
+      - name: Upload contract build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soroban-contract-artifacts
+          path: |
+            contracts/target/wasm32-unknown-unknown/release/*.wasm
+            contracts/target/wasm32-unknown-unknown/release/artifact-metadata.json
+          retention-days: 7
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ./server
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: server/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Generate Prisma Client
+      run: npm run prisma:generate
+    
+    - name: Type check (Lint)
+      run: npm run lint
+    
+    - name: Build
+      run: npm run build
+
+  # Backend database migration CI
+  backend-migrations:
+    name: Backend Migrations
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -38,14 +160,272 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/app_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Verify migration files
+      run: ./scripts/verify-migrations.sh
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Rollback verification (up -> down -> up, #871)
+      env:
+        SKIP_BACKUP: "1"  # CI database is disposable; never skip the backup on shared data
+      run: |
+        chmod +x ./scripts/rollback-verify.sh
+        ./scripts/rollback-verify.sh
+
+  # Backend (Rust) build & test
+  backend-build:
+    name: Backend Build & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: arenax
+          POSTGRES_PASSWORD: arenax
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # The realtime/session tests connect to Redis at 127.0.0.1:6379.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      REDIS_URL: redis://localhost:6379
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin/sqlx
+        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-target-
+
+    - name: Install SQLx CLI
+      run: |
+        if ! command -v sqlx >/dev/null 2>&1; then
+          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
+        fi
+
+    - name: Apply migrations
+      run: ./scripts/migrate.sh
+
+    - name: Check SQLx offline metadata
+      run: cargo sqlx prepare --check -- --all-targets
+
+    - name: Type check
+      run: cargo check --all-targets --locked
+
+    - name: Run tests
+      run: cargo test --all-targets --locked
+
+  # Contracts CI (Rust)
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ./contracts
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    
+    - name: Install wasm target
+      run: rustup target add wasm32-unknown-unknown
+    
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          contracts/target
+        key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
+    
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    
+    - name: Build contracts
+      run: cargo build --target wasm32-unknown-unknown --release
+    
+    - name: Run tests
+      run: cargo test
+
+  # Frontend E2E tests
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Install Playwright browsers
+      run: npx playwright install --with-deps chromium
+
+    - name: Build app
+      run: npm run build
+      env:
+        NODE_ENV: production
+
+    - name: Run E2E tests
+      run: npm run test:e2e
+      env:
+        PLAYWRIGHT_BASE_URL: http://localhost:3000
+        CI: true
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
-          node-version: 20
-      - run: npm ci
-      - name: Run migrations
-        run: npm run migrate:up
-      - name: Seed representative dataset
-        run: npm run seed:bench
-      - name: Capture explain plans and detect regressions
-        run: npm run query-plans:check
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+  # Transactional rollout/rollback gate (#96)
+  deploy-gates:
+    name: Deploy Gates
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Verify deploy workflow exists
+      run: |
+        if [ ! -f .github/workflows/deploy.yml ]; then
+          echo "::error::.github/workflows/deploy.yml is missing; rollout/rollback gates cannot be verified"
+          exit 1
+        fi
+
+    - name: Verify readiness gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        READY_LINE=$(grep -n -i -E 'readiness|health' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$READY_LINE" ]; then
+          echo "::error::No readiness/health gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$READY_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Readiness gate (line $READY_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Readiness gate at line $READY_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify migration gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        MIGRATE_LINE=$(grep -n -i -E 'migrat' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$MIGRATE_LINE" ]; then
+          echo "::error::No migration gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$MIGRATE_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Rollback/migration gate (line $MIGRATE_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Migration gate at line $MIGRATE_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify rollback restores prior artifact without destructive schema reversal
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        if ! grep -q -i -E 'rollback' "$DEPLOY"; then
+          echo "::error::No rollback path found in deploy workflow"
+          exit 1
+        fi
+        if ! grep -q -i -E 'previous|prior|PREVIOUS_RELEASE|PREVIOUS_IMAGE|rollback.*(image|release|artifact)' "$DEPLOY"; then
+          echo "::error::Rollback does not reference the prior application artifact/release"
+          exit 1
+        fi
+        if grep -q -i -E 'migrate.*(down|revert)|sqlx migrate revert|rollback-verify' "$DEPLOY"; then
+          echo "::error::Rollback performs destructive schema reversal; schema must remain backward-compatible"
+          exit 1
+        fi
+        echo "Rollback restores prior artifact without destructive schema reversal"

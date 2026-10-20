@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE matchmaking_queue\n            SET status = $1\n            WHERE status = $2 AND expires_at < $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b32cea36d110d7a1fee7b9b25e06551164e027e7a134ad2abf00af63f81fccc1"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT DISTINCT game, game_mode \n                    FROM matchmaking_queue \n                    WHERE status = $1\n                    ORDER BY game, game_mode\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "448b5ba7d4094f1d5665b629fb56f296fc76fefc7ba20cb64ea2d398be1c5478"
+}

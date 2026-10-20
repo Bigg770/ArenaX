@@ -1,0 +1,106 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM tournament_matches WHERE round_id = $1 ORDER BY match_number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tournament_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "round_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "match_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "player1_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "player2_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "winner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "player1_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "player2_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "scheduled_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "8fca3de9ae239cc757492c2228524f74cc7fd7a477990f227859d985b1a7602e"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE user_elo\n                SET current_rating = $1, peak_rating = $2, games_played = games_played + 1,\n                    wins = $3, losses = $4, draws = $5, win_streak = $6, loss_streak = $7,\n                    last_updated = $8\n                WHERE user_id = $9 AND game = $10\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Timestamptz",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "09521111528be6aea20b0a8d55104fba3b87d50ed5292dc1617f04a990859c48"
+}

@@ -1,0 +1,104 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO wallets (\n                id, user_id, balance, escrow_balance, currency,\n                balance_ngn, balance_arenax_tokens, balance_xlm,\n                is_active, created_at, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 3,
+        "name": "escrow_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "balance_ngn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "balance_arenax_tokens",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "balance_xlm",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "stellar_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "stellar_public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Numeric",
+        "Varchar",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ce5cccb81c89fa950e9ff2f0ec08c43f131a9855de2425a25c835e2de173caa3"
+}

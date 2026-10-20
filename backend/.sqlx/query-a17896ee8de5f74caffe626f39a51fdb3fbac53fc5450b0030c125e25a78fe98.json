@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n            tr.round_number,\n            tr.round_type,\n            COUNT(tm.id) as total_matches,\n            COUNT(CASE WHEN tm.status = 'completed' THEN 1 END) as completed_matches,\n            COUNT(CASE WHEN tm.status = 'pending' OR tm.status = 'scheduled' THEN 1 END) as pending_matches,\n            COUNT(CASE WHEN tm.status = 'in_progress' THEN 1 END) as in_progress_matches,\n            COUNT(CASE WHEN tm.status = 'disputed' THEN 1 END) as disputed_matches,\n            AVG(EXTRACT(EPOCH FROM (tm.completed_at - tm.started_at))) as avg_duration_secs\n            FROM tournament_rounds tr\n            LEFT JOIN tournament_matches tm ON tr.id = tm.round_id AND tr.tournament_id = $1\n            WHERE tr.tournament_id = $1\n            GROUP BY tr.round_number, tr.round_type\n            ORDER BY tr.round_number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "round_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "round_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "total_matches",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "completed_matches",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "pending_matches",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "in_progress_matches",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "disputed_matches",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "avg_duration_secs",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a17896ee8de5f74caffe626f39a51fdb3fbac53fc5450b0030c125e25a78fe98"
+}

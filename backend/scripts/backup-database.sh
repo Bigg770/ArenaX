@@ -7,12 +7,34 @@
 #   BACKUP_DIR          (default ./backups) local staging directory
 #   S3_BACKUP_BUCKET     (optional) e.g. s3://arenax-db-backups/backend
 #   BACKUP_RETENTION_DAYS (default 30) prune local dumps older than this
+#   DISPOSABLE           (optional) set to 1 to skip S3 upload and pruning
+#
+# Flags:
+#   --disposable         same as DISPOSABLE=1: take a local-only snapshot of a
+#                        throwaway database (used by the migration harness for
+#                        pre-migration snapshots) without touching shared S3
+#                        backup infrastructure or pruning retained dumps.
 #
 # See backend/scripts/BACKUP_RECOVERY.md for RTO/RPO targets and the full
 # recovery procedure (restore-database.sh, verify-backup.sh).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+disposable="${DISPOSABLE:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --disposable) disposable=1 ;;
+    -h|--help)
+      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "DATABASE_URL must be set before creating a backup." >&2
@@ -22,6 +44,10 @@ fi
 backup_dir="${BACKUP_DIR:-./backups}"
 retention_days="${BACKUP_RETENTION_DAYS:-30}"
 mkdir -p "$backup_dir"
+
+if [ "$disposable" = "1" ]; then
+  echo "Disposable mode: S3 upload and retention pruning are disabled."
+fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 output="$backup_dir/arenax-$timestamp.dump"
@@ -33,7 +59,9 @@ pg_dump "$DATABASE_URL" --format=custom --no-owner --no-acl --file="$output"
 sha256sum "$output" > "$checksum_file"
 echo "Checksum written to $checksum_file"
 
-if [ -n "${S3_BACKUP_BUCKET:-}" ]; then
+if [ "$disposable" = "1" ]; then
+  :
+elif [ -n "${S3_BACKUP_BUCKET:-}" ]; then
   echo "Uploading backup to $S3_BACKUP_BUCKET"
   aws s3 cp "$output" "$S3_BACKUP_BUCKET/$(basename "$output")"
   aws s3 cp "$checksum_file" "$S3_BACKUP_BUCKET/$(basename "$checksum_file")"
@@ -48,6 +76,8 @@ fi
 # Prune local dumps older than the retention window. Remote (S3) retention
 # is managed by a bucket lifecycle rule instead, since that's the durable
 # copy — see BACKUP_RECOVERY.md.
-find "$backup_dir" -maxdepth 1 -name 'arenax-*.dump*' -mtime "+$retention_days" -print -delete
+if [ "$disposable" != "1" ]; then
+  find "$backup_dir" -maxdepth 1 -name 'arenax-*.dump*' -mtime "+$retention_days" -print -delete
+fi
 
 echo "Database backup written to $output"

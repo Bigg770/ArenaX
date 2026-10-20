@@ -1,9 +1,9 @@
 use crate::api_error::ApiError;
 use crate::db::DbPool;
 use crate::models::api_key::{
-    ApiKey, ApiKeyRotationHistory, ApiKeySummary, ApiKeyUsageLog, CreateApiKeyRequest,
+    ApiKey, ApiKeyRotationHistory, ApiKeyStats, ApiKeySummary, ApiKeyUsageLog, CreateApiKeyRequest,
     CreateApiKeyResponse, GenerateApiKeyRequest, GenerateApiKeyResponse, GetApiKeyResponse,
-    KeyStatus, RevokeApiKeyRequest, RotateApiKeyRequest, RotateApiKeyResponse,
+    KeyStatus, KeyType, RevokeApiKeyRequest, RotateApiKeyRequest, RotateApiKeyResponse,
     UpdateApiKeyRequest,
 };
 use chrono::{Duration, Utc};
@@ -64,21 +64,21 @@ impl ApiKeyService {
     // ── Key Generation ───────────────────────────────────────────────────────
 
     /// Generate a cryptographically secure API key
-    fn generate_key() -> String {
+    fn generate_secret_key() -> String {
+        use rand::RngCore;
         let mut bytes = [0u8; 32];
-        getrandom::getrandom(&mut bytes).expect("Failed to generate random bytes");
-        // Use URL-safe base64 encoding without padding
+        rand::thread_rng().fill_bytes(&mut bytes);
         URL_SAFE_NO_PAD.encode(&bytes)
     }
 
     /// Create a new API key
-    #[tracing::instrument(skip(self, request), fields(user_id = %request.user_id, key_name = %request.name))]
+    #[tracing::instrument(skip(self, request), fields(user_id = %user_id, key_name = %request.name))]
     pub async fn create_key(
         &self,
         request: CreateApiKeyRequest,
         user_id: Uuid,
     ) -> Result<CreateApiKeyResponse, ApiError> {
-        let key = Self::generate_key();
+        let key = Self::generate_secret_key();
         let key_hash_value = key_hash(&key);
 
         // Parse expiration date if provided
@@ -163,7 +163,7 @@ impl ApiKeyService {
         request: GenerateApiKeyRequest,
         user_id: Uuid,
     ) -> Result<GenerateApiKeyResponse, ApiError> {
-        let key = Self::generate_key();
+        let key = Self::generate_secret_key();
         let key_hash_value = key_hash(&key);
 
         let expiration_date = request
@@ -251,7 +251,7 @@ impl ApiKeyService {
                 name,
                 description,
                 user_id,
-                key_type,
+                key_type as "key_type: KeyType",
                 scopes,
                 expiration_date,
                 is_active,
@@ -304,28 +304,29 @@ impl ApiKeyService {
             ApiKeySummary,
             r#"
             SELECT 
-                id,
-                name,
-                description,
-                key_type,
-                scopes,
-                is_active,
-                expiration_date,
-                created_at,
-                last_used_at,
-                use_count,
-                max_uses,
-                rotation_enabled,
-                next_rotation_date,
-                old_key_expires_at,
-                overlap_duration_seconds,
-                webhook_url,
-                key_preview,
-                created_by_username,
-                created_by_email,
-                status
-            FROM api_key_summaries
-            WHERE id = $1 AND user_id = $2
+                s.id as "id!",
+                s.name as "name!",
+                s.description,
+                s.key_type as "key_type!",
+                s.scopes as "scopes!",
+                s.is_active as "is_active!",
+                s.expiration_date,
+                s.created_at as "created_at!",
+                s.last_used_at,
+                s.use_count as "use_count!",
+                s.max_uses,
+                s.rotation_enabled as "rotation_enabled!",
+                s.next_rotation_date,
+                s.old_key_expires_at,
+                s.overlap_duration_seconds,
+                s.webhook_url,
+                s.key_preview,
+                s.created_by_username,
+                s.created_by_email,
+                s.status as "status!: KeyStatus"
+            FROM api_key_summaries s
+            JOIN api_keys ak ON s.id = ak.id
+            WHERE s.id = $1 AND ak.user_id = $2
             "#,
             key_id,
             user_id,
@@ -344,29 +345,30 @@ impl ApiKeyService {
             ApiKeySummary,
             r#"
             SELECT 
-                id,
-                name,
-                description,
-                key_type,
-                scopes,
-                is_active,
-                expiration_date,
-                created_at,
-                last_used_at,
-                use_count,
-                max_uses,
-                rotation_enabled,
-                next_rotation_date,
-                old_key_expires_at,
-                overlap_duration_seconds,
-                webhook_url,
-                key_preview,
-                created_by_username,
-                created_by_email,
-                status
-            FROM api_key_summaries
-            WHERE user_id = $1
-            ORDER BY created_at DESC
+                s.id as "id!",
+                s.name as "name!",
+                s.description,
+                s.key_type as "key_type!",
+                s.scopes as "scopes!",
+                s.is_active as "is_active!",
+                s.expiration_date,
+                s.created_at as "created_at!",
+                s.last_used_at,
+                s.use_count as "use_count!",
+                s.max_uses,
+                s.rotation_enabled as "rotation_enabled!",
+                s.next_rotation_date,
+                s.old_key_expires_at,
+                s.overlap_duration_seconds,
+                s.webhook_url,
+                s.key_preview,
+                s.created_by_username,
+                s.created_by_email,
+                s.status as "status!: KeyStatus"
+            FROM api_key_summaries s
+            JOIN api_keys ak ON s.id = ak.id
+            WHERE ak.user_id = $1
+            ORDER BY s.created_at DESC
             "#,
             user_id,
         )
@@ -393,7 +395,7 @@ impl ApiKeyService {
                 name,
                 description,
                 user_id,
-                key_type,
+                key_type as "key_type: KeyType",
                 scopes,
                 expiration_date,
                 is_active,
@@ -468,8 +470,8 @@ impl ApiKeyService {
         let expiration_date = if let Some(date_str) = request.expiration_date {
             Some(
                 chrono::DateTime::parse_from_rfc3339(&date_str)
-                    .map(|dt| dt.with_timezone(&Utc))?
-                    .into(),
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| ApiError::bad_request(e.to_string()))?,
             )
         } else {
             None
@@ -504,7 +506,13 @@ impl ApiKeyService {
                 webhook_url = COALESCE($10, webhook_url),
                 updated_at = NOW()
             WHERE id = $11 AND user_id = $12
-            RETURNING *
+            RETURNING 
+                id, key, name, description, user_id, key_type as "key_type: KeyType",
+                scopes, expiration_date, is_active, created_at, updated_at,
+                last_used_at, revoked_at, revoked_by, rotation_enabled,
+                rotation_interval, next_rotation_date, max_uses, use_count,
+                metadata, overlap_duration_seconds, old_key_hash,
+                old_key_expires_at, webhook_url
             "#,
             request.name,
             request.description,
@@ -564,7 +572,7 @@ impl ApiKeyService {
 
         info!(
             key_id = %key_id,
-            reason = %request.reason.unwrap_or("No reason provided"),
+            reason = %request.reason.as_deref().unwrap_or("No reason provided"),
             "API key revoked"
         );
 
@@ -596,7 +604,7 @@ impl ApiKeyService {
             normalized_overlap(request.overlap_duration_seconds, existing_key.overlap_duration_seconds);
 
         // Generate new key
-        let new_key = Self::generate_key();
+        let new_key = Self::generate_secret_key();
         let new_key_hash_value = key_hash(&new_key);
         let old_key_hash_value = existing_key.key.clone();
 
@@ -802,12 +810,12 @@ impl ApiKeyService {
                 api_key_id, endpoint, method, client_ip, user_agent,
                 response_status, request_duration_ms, scopes_used
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, ($4::text)::inet, $5, $6, $7, $8)
             "#,
             usage.api_key_id,
             usage.endpoint,
             usage.method,
-            usage.client_ip,
+            usage.client_ip.as_deref(),
             usage.user_agent,
             usage.response_status,
             usage.request_duration_ms,
@@ -851,11 +859,11 @@ impl ApiKeyService {
                 api_key_id,
                 endpoint,
                 method,
-                client_ip,
+                client_ip::text as "client_ip?",
                 user_agent,
                 response_status,
                 request_duration_ms,
-                scopes_used,
+                scopes_used as "scopes_used!",
                 created_at
             FROM api_key_usage_logs
             WHERE api_key_id = $1
@@ -879,17 +887,17 @@ impl ApiKeyService {
             ApiKeyStats,
             r#"
             SELECT 
-                COUNT(*) AS total_keys,
+                COUNT(*) AS "total_keys!",
                 COUNT(*) FILTER (WHERE is_active AND 
                     (expiration_date IS NULL OR expiration_date > NOW()) AND
-                    (max_uses IS NULL OR use_count < max_uses)) AS active_keys,
-                COUNT(*) FILTER (WHERE expiration_date IS NOT NULL AND expiration_date < NOW()) AS expired_keys,
-                COUNT(*) FILTER (WHERE is_active = false) AS revoked_keys,
+                    (max_uses IS NULL OR use_count < max_uses)) AS "active_keys!",
+                COUNT(*) FILTER (WHERE expiration_date IS NOT NULL AND expiration_date < NOW()) AS "expired_keys!",
+                COUNT(*) FILTER (WHERE is_active = false) AS "revoked_keys!",
                 COUNT(*) FILTER (WHERE rotation_enabled AND 
                     next_rotation_date IS NOT NULL AND 
-                    next_rotation_date < NOW()) AS keys_needing_rotation,
-                COALESCE(SUM(use_count), 0) AS total_uses,
-                COUNT(*) FILTER (WHERE max_uses IS NOT NULL) AS keys_with_max_uses
+                    next_rotation_date < NOW()) AS "keys_needing_rotation!",
+                COALESCE(SUM(use_count), 0)::bigint AS "total_uses!",
+                COUNT(*) FILTER (WHERE max_uses IS NOT NULL) AS "keys_with_max_uses!"
             FROM api_keys
             "#,
         )

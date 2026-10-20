@@ -71,22 +71,21 @@ fn init_sentry() -> Option<ClientInitGuard> {
     let environment = env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
     let slack_webhook_url = env::var("SLACK_WEBHOOK_URL").ok().filter(|u| !u.is_empty());
 
-    let guard = sentry::init((
-        dsn,
-        sentry::ClientOptions::default()
-            .release(sentry::release_name!())
-            .environment(environment)
-            .max_breadcrumbs(10)
-            .attach_stacktrace(true)
-            .before_send(move |event| {
-                if event.level >= sentry::Level::Error {
-                    if let Some(webhook_url) = slack_webhook_url.clone() {
-                        notify_slack_on_critical_error(webhook_url, summarize_event(&event));
-                    }
-                }
-                Some(event)
-            }),
-    ));
+    let mut opts = sentry::ClientOptions::default();
+    opts.release = sentry::release_name!();
+    opts.environment = Some(environment.into());
+    opts.max_breadcrumbs = 10;
+    opts.attach_stacktrace = true;
+    opts.before_send = Some(std::sync::Arc::new(Box::new(move |event: sentry::protocol::Event<'static>| {
+        if event.level >= sentry::Level::Error {
+            if let Some(webhook_url) = slack_webhook_url.clone() {
+                notify_slack_on_critical_error(webhook_url, summarize_event(&event));
+            }
+        }
+        Some(event)
+    })));
+
+    let guard = sentry::init((dsn, opts));
 
     Some(guard)
 }

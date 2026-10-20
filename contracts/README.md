@@ -424,6 +424,7 @@ Three staking subsystems in one contract:
 | `cross-contract-utils/`      | Reusable cross-contract call patterns                  |
 | `cross-game-assets/`         | Cross-title NFT bridge + wrapped assets                |
 | `event-manager/`             | Webhook-style event dispatch to off-chain indexers     |
+| `match-lifecycle/`           | Participant-authorized on-chain match state machine    |
 | `staking-rewards/`           | Standalone reward calculator (used by staking-manager) |
 | `time-lock/`                 | TimelockExecutor for governance proposals (≥ 48h wait) |
 | `treasury/`                  | Multi-sig + streaming treasury management             |

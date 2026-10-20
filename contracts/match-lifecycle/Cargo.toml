@@ -1,0 +1,18 @@
+[package]
+name = "match-lifecycle"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-chain match authority lifecycle for ArenaX"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk.workspace = true
+arenax-events = { path = "../arenax-events" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO tournaments (\n                id, name, description, game, max_participants, entry_fee, entry_fee_currency,\n                prize_pool, prize_pool_currency, status, start_time, registration_deadline,\n                created_by, created_at, updated_at, bracket_type, rules, min_skill_level, max_skill_level\n            ) VALUES (\n                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19\n            ) RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "max_participants",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "entry_fee",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "entry_fee_currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "prize_pool",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "prize_pool_currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "start_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "end_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "registration_deadline",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "bracket_type",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 17,
+        "name": "rules",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 18,
+        "name": "min_skill_level",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 19,
+        "name": "max_skill_level",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 20,
+        "name": "cleaned_up_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Int4",
+        "Int8",
+        "Varchar",
+        "Int8",
+        "Varchar",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Text",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "81242d137aa80831342bf9674eba42a093d212ad024acfbf7e11f2bff470df5f"
+}

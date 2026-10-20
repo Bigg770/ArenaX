@@ -18,12 +18,22 @@ export interface MatchUpdate {
   timestamp: number;
 }
 
-interface UseMatchWebSocketOptions {
+export interface UseMatchWebSocketOptions {
   matchId: string;
   enabled?: boolean;
+  /**
+   * Callback invoked upon reconnect to refresh authoritative match and tournament
+   * state before incremental updates resume (#34).
+   */
+  onResync?: () => Promise<void> | void;
+  /**
+   * Optional token / auth renewal function called when an authorization failure
+   * occurs or on reconnect before opening a new socket (#34).
+   */
+  onRenewAuth?: () => Promise<string | boolean | null>;
 }
 
-interface UseMatchWebSocketReturn {
+export interface UseMatchWebSocketReturn {
   isConnected: boolean;
   lastUpdate: MatchUpdate | null;
   connectionError: string | null;
@@ -31,130 +41,229 @@ interface UseMatchWebSocketReturn {
   isReconnecting: boolean;
   /** True briefly after the connection is restored following a drop. */
   connectionRestored: boolean;
+  /** True if reconnection was stopped due to permanent authorization failure. */
+  isPermanentAuthFailure: boolean;
+  /** Triggers an immediate authoritative state resync. */
+  resyncAuthoritativeState: () => Promise<void>;
   reconnect: () => void;
   disconnect: () => void;
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants (#34)
 // ---------------------------------------------------------------------------
 
 /** Initial reconnect delay (ms). */
 const INITIAL_RECONNECT_DELAY_MS = 500;
 
-/** Maximum reconnect delay (ms). */
+/** Maximum reconnect delay (ms). Bounded exponential backoff. */
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
-/** Reconnect attempts before surfacing a connection-lost notification. */
-const MAX_RECONNECT_ATTEMPTS = 5;
+/** Maximum reconnect attempts before surfacing an offline warning. */
+const MAX_RECONNECT_ATTEMPTS = 8;
 
 /** How long the "connection restored" flag stays set (ms). */
 const RESTORED_NOTICE_MS = 3_000;
 
+/** Heartbeat interval to detect zombie / dropped connections (ms). */
+const HEARTBEAT_INTERVAL_MS = 25_000;
+
+/** Maximum time to wait for a pong response before declaring connection dead (ms). */
+const PONG_TIMEOUT_MS = 8_000;
+
+/** Close codes indicating permanent authorization failure where reconnect must stop (#34). */
+const PERMANENT_AUTH_CODES = [1008, 4001, 4003, 4401, 4403];
+
 // ---------------------------------------------------------------------------
 // useMatchWebSocket
-//
-// Real WebSocket implementation — no simulation scaffolding.
-//
-// Authentication: the browser automatically sends the `auth_token` httpOnly
-// cookie with the WebSocket upgrade request (same-origin).  No token is ever
-// embedded in the URL or passed via localStorage.
-//
-// Reconnection: exponential back-off (500ms → 30s), giving up after
-// MAX_RECONNECT_ATTEMPTS. The last received update is kept while offline so
-// the UI can keep rendering cached state.
 // ---------------------------------------------------------------------------
 
 export function useMatchWebSocket({
   matchId,
   enabled = true,
+  onResync,
+  onRenewAuth,
 }: UseMatchWebSocketOptions): UseMatchWebSocketReturn {
+  const queryClient = useQueryClient();
+
   const [isConnected, setIsConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<MatchUpdate | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [connectionRestored, setConnectionRestored] = useState(false);
+  const [isPermanentAuthFailure, setIsPermanentAuthFailure] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const retryCountRef = useRef(0);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pongTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Set to true when the cleanup function runs so stale async callbacks
-  // don't attempt to reconnect after the component has unmounted.
+  const retryCountRef = useRef(0);
   const closedRef = useRef(false);
+  const isResyncingRef = useRef(false);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
-  const clearReconnectTimer = () => {
+  const clearTimers = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-  };
+    if (heartbeatTimerRef.current !== null) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    if (pongTimerRef.current !== null) {
+      clearTimeout(pongTimerRef.current);
+      pongTimerRef.current = null;
+    }
+  }, []);
 
   const buildWsUrl = useCallback(() => {
+    if (typeof window === "undefined") return "";
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    // matchId is path-encoded to prevent URL injection.
     return `${protocol}://${window.location.host}/ws/match/${encodeURIComponent(matchId)}`;
   }, [matchId]);
+
+  // ── Authoritative State Resync (#34) ─────────────────────────────────────
+
+  const resyncAuthoritativeState = useCallback(async () => {
+    if (isResyncingRef.current || !matchId) return;
+    isResyncingRef.current = true;
+    try {
+      // 1. Invalidate and refetch authoritative query state in React Query
+      await Promise.allSettled([
+        queryClient.invalidateQueries({ queryKey: ["match", matchId] }),
+        queryClient.invalidateQueries({ queryKey: ["tournament"] }),
+        queryClient.invalidateQueries({ queryKey: ["bracket"] }),
+      ]);
+      // 2. Invoke caller's custom resync handler if provided
+      if (onResync) {
+        await onResync();
+      }
+    } catch {
+      // Non-fatal: resync failure should not break connection flow
+    } finally {
+      isResyncingRef.current = false;
+    }
+  }, [matchId, onResync, queryClient]);
 
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   const disconnect = useCallback(() => {
-    clearReconnectTimer();
+    clearTimers();
     retryCountRef.current = 0;
     if (wsRef.current) {
-      // Remove handlers before closing so onclose doesn't schedule a reconnect.
       wsRef.current.onopen = null;
       wsRef.current.onmessage = null;
       wsRef.current.onclose = null;
       wsRef.current.onerror = null;
-      wsRef.current.close(1000, "Client disconnect");
+      try {
+        wsRef.current.close(1000, "Client unmount/disconnect");
+      } catch {}
       wsRef.current = null;
     }
     setIsConnected(false);
     setIsReconnecting(false);
-    setConnectionError(null);
+  }, [clearTimers]);
+
+  // ── Heartbeat Management ─────────────────────────────────────────────────
+
+  const startHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+    if (pongTimerRef.current) clearTimeout(pongTimerRef.current);
+
+    heartbeatTimerRef.current = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+          pongTimerRef.current = setTimeout(() => {
+            // Heartbeat missed (e.g. mobile sleep / broken socket)
+            if (wsRef.current) {
+              try {
+                wsRef.current.close(4000, "Heartbeat timeout");
+              } catch {}
+            }
+          }, PONG_TIMEOUT_MS);
+        } catch {
+          // Send error
+        }
+      }
+    }, HEARTBEAT_INTERVAL_MS);
   }, []);
 
-  // ── Connect ───────────────────────────────────────────────────────────────
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    if (pongTimerRef.current) {
+      clearTimeout(pongTimerRef.current);
+      pongTimerRef.current = null;
+    }
+  }, []);
 
-  const connect = useCallback(() => {
+  // ── Connect & Session Recovery ────────────────────────────────────────────
+
+  const connect = useCallback(async () => {
     if (closedRef.current || !enabled || !matchId) return;
+    if (isPermanentAuthFailure) return;
 
-    // Clean up any existing socket before opening a new one.
+    // Clean up any existing connection
     if (wsRef.current) {
       wsRef.current.onopen = null;
       wsRef.current.onmessage = null;
       wsRef.current.onclose = null;
       wsRef.current.onerror = null;
-      wsRef.current.close();
+      try {
+        wsRef.current.close(1000, "Opening new connection");
+      } catch {}
       wsRef.current = null;
     }
 
     setConnectionError(null);
+
+    // Optional auth renewal before reconnecting
+    if (onRenewAuth && retryCountRef.current > 0) {
+      try {
+        const renewed = await onRenewAuth();
+        if (renewed === false) {
+          setIsPermanentAuthFailure(true);
+          setIsReconnecting(false);
+          setConnectionError("Session expired. Please sign in again.");
+          return;
+        }
+      } catch {
+        // Renewal threw — back off
+      }
+    }
 
     let ws: WebSocket;
     try {
       ws = new WebSocket(buildWsUrl());
     } catch {
-      // URL construction failed — don't retry.
       setConnectionError("Unable to open match feed connection.");
       return;
     }
 
     wsRef.current = ws;
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       if (closedRef.current) {
-        ws.close();
+        try {
+          ws.close(1000, "Component unmounted");
+        } catch {}
         return;
       }
+
       const wasReconnecting = retryCountRef.current > 0;
       retryCountRef.current = 0;
       setIsConnected(true);
       setIsReconnecting(false);
       setConnectionError(null);
+      setIsPermanentAuthFailure(false);
+      startHeartbeat();
+
       if (wasReconnecting) {
         setConnectionRestored(true);
         if (restoredTimerRef.current) clearTimeout(restoredTimerRef.current);
@@ -162,6 +271,9 @@ export function useMatchWebSocket({
           () => setConnectionRestored(false),
           RESTORED_NOTICE_MS,
         );
+
+        // Always refresh authoritative match and tournament state on reconnect (#34)
+        await resyncAuthoritativeState();
       }
     };
 
@@ -169,10 +281,26 @@ export function useMatchWebSocket({
       try {
         const data = JSON.parse(event.data as string) as Partial<MatchUpdate> & {
           type?: string;
+          error?: string;
         };
 
-        // Ignore keepalive pings.
-        if (data.type === "ping") return;
+        // Handle keepalive pong
+        if (data.type === "pong" || data.type === "heartbeat") {
+          if (pongTimerRef.current) {
+            clearTimeout(pongTimerRef.current);
+            pongTimerRef.current = null;
+          }
+          return;
+        }
+
+        // Server auth rejection message
+        if (data.type === "auth_error" || data.error === "unauthorized") {
+          setIsPermanentAuthFailure(true);
+          setIsConnected(false);
+          setConnectionError("Authentication failed. Please sign in again.");
+          disconnect();
+          return;
+        }
 
         if (data.matchId) {
           setLastUpdate({
@@ -186,62 +314,128 @@ export function useMatchWebSocket({
           });
         }
       } catch {
-        // Ignore malformed messages.
+        // Ignore malformed frames
       }
     };
 
     ws.onclose = (event: CloseEvent) => {
+      stopHeartbeat();
       setIsConnected(false);
       wsRef.current = null;
 
       if (closedRef.current) return;
 
-      // Permanent auth failures — do not retry.
-      const AUTH_FAILURE_CODES = [1008, 4401, 4403];
-      if (AUTH_FAILURE_CODES.includes(event.code)) {
-        setConnectionError("Authentication failed. Please refresh the page.");
+      // Permanent authorization failures: stop reconnecting (#34)
+      if (PERMANENT_AUTH_CODES.includes(event.code)) {
+        setIsPermanentAuthFailure(true);
+        setIsReconnecting(false);
+        setConnectionError("Authentication failed. Reconnection stopped.");
         return;
       }
 
-      // Normal closure — no reconnect needed.
+      // Normal closure
       if (event.code === 1000) return;
 
       if (retryCountRef.current >= MAX_RECONNECT_ATTEMPTS) {
         setIsReconnecting(false);
-        setConnectionError(
-          "Connection to match feed lost. Showing last known state.",
-        );
+        setConnectionError("Connection lost. Showing last known state.");
         return;
       }
 
-      // Transient failure — reconnect with exponential back-off.
-      const delay = Math.min(
-        MAX_RECONNECT_DELAY_MS,
-        INITIAL_RECONNECT_DELAY_MS * 2 ** retryCountRef.current,
-      );
+      // Bounded exponential reconnect with jitter (#34)
+      const jitter = Math.random() * 300;
+      const baseDelay = INITIAL_RECONNECT_DELAY_MS * 2 ** retryCountRef.current;
+      const delay = Math.min(MAX_RECONNECT_DELAY_MS, baseDelay + jitter);
+
       retryCountRef.current += 1;
       setIsReconnecting(true);
-      reconnectTimerRef.current = setTimeout(connect, delay);
+
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        connect();
+      }, delay);
     };
 
     ws.onerror = () => {
-      // onclose fires immediately after onerror — reconnect logic lives there.
-      ws.close();
+      try {
+        ws.close();
+      } catch {}
     };
-  }, [buildWsUrl, enabled, matchId]);
+  }, [
+    buildWsUrl,
+    disconnect,
+    enabled,
+    isPermanentAuthFailure,
+    matchId,
+    onRenewAuth,
+    resyncAuthoritativeState,
+    startHeartbeat,
+    stopHeartbeat,
+  ]);
 
   // ── Public reconnect ──────────────────────────────────────────────────────
 
   const reconnect = useCallback(() => {
-    clearReconnectTimer();
+    clearTimers();
     retryCountRef.current = 0;
+    setIsPermanentAuthFailure(false);
     connect();
-  }, [connect]);
+  }, [clearTimers, connect]);
 
-  // ── Effect: open / close socket on mount / matchId / enabled changes ──────
+  // ── Network Handoff and Visibility Handling (#34) ─────────────────────────
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !enabled || !matchId) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // App woke up from sleep / tab became active: check connection
+        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+          if (!isPermanentAuthFailure) {
+            connect();
+          }
+        } else if (wsRef.current.readyState === WebSocket.OPEN) {
+          // Send instant ping to verify socket isn't half-dead
+          try {
+            wsRef.current.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+          } catch {
+            connect();
+          }
+        }
+      }
+    };
+
+    const handleOnline = () => {
+      // Network restored after offline / handoff
+      if (!isPermanentAuthFailure) {
+        clearTimers();
+        retryCountRef.current = 0;
+        connect();
+      }
+    };
+
+    const handleOffline = () => {
+      setIsConnected(false);
+      setConnectionError("Network offline. Waiting for connection...");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [clearTimers, connect, enabled, isPermanentAuthFailure, matchId]);
+
+  // ── Mount / MatchId / Route Change Lifecycle (#34) ────────────────────────
 
   useEffect(() => {
     closedRef.current = false;
+    setIsPermanentAuthFailure(false);
 
     if (enabled && matchId) {
       connect();
@@ -250,36 +444,10 @@ export function useMatchWebSocket({
     return () => {
       closedRef.current = true;
       if (restoredTimerRef.current) clearTimeout(restoredTimerRef.current);
+      stopHeartbeat();
       disconnect();
     };
-    // `connect` and `disconnect` are stable callbacks; re-run when the
-    // match or enabled flag changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchId, enabled]);
-
-  // ── Dev-only simulation ───────────────────────────────────────────────────
-  // Gated strictly behind NODE_ENV so it is tree-shaken out of the
-  // production bundle.  Never runs in production.
-
-  useEffect(() => {
-    if (process.env.NODE_ENV === "production") return;
-    if (!enabled || !matchId || !isConnected) return;
-
-    // In development, simulate a match update after 3 seconds so the UI can
-    // be tested without a live backend.
-    const timer = setTimeout(() => {
-      setLastUpdate({
-        matchId,
-        scorePlayer1: 0,
-        scorePlayer2: 0,
-        status: "in_progress",
-        message: "[dev] Match feed connected.",
-        timestamp: Date.now(),
-      });
-    }, 3_000);
-
-    return () => clearTimeout(timer);
-  }, [enabled, isConnected, matchId]);
+  }, [connect, disconnect, enabled, matchId, stopHeartbeat]);
 
   return {
     isConnected,
@@ -287,13 +455,15 @@ export function useMatchWebSocket({
     connectionError,
     isReconnecting,
     connectionRestored,
+    isPermanentAuthFailure,
+    resyncAuthoritativeState,
     reconnect,
     disconnect,
   };
 }
 
 // ---------------------------------------------------------------------------
-// useMatchScoreReporting  (unchanged — no simulation code was here)
+// useMatchScoreReporting
 // ---------------------------------------------------------------------------
 
 interface ScoreSubmission {
@@ -306,11 +476,9 @@ interface ScoreSubmission {
 
 interface UseMatchScoreReportingOptions {
   expectedReport?: ScoreReport | null;
-  /** Keys the "pending report" cache entry (#1088). Falls back to a shared key when omitted. */
   matchId?: string;
 }
 
-/** Thrown by the mutation when the reporter's score doesn't match the opponent's (#1088). */
 class ScoreConflictError extends Error {
   constructor(public readonly expectedReport: ScoreReport) {
     super("SCORE_CONFLICT");
@@ -332,15 +500,10 @@ export function useMatchScoreReporting(
 ): UseMatchScoreReportingReturn {
   const queryClient = useQueryClient();
   const [conflictDetected, setConflictDetected] = useState(false);
-  const [conflictingReport, setConflictingReport] = useState<ScoreReport | null>(
-    null,
-  );
+  const [conflictingReport, setConflictingReport] = useState<ScoreReport | null>(null);
 
   const pendingKey = ["pendingScoreReport", options.matchId ?? "unknown"] as const;
 
-  // Cache-only value: never fetched, only ever written by the mutation's
-  // onMutate below — this is what makes the "Pending Confirmation" state
-  // (#1088) visible the instant the user submits, not after the round trip.
   const { data: pendingReport = null } = useQuery({
     queryKey: pendingKey,
     queryFn: () => null as ScoreReport | null,
@@ -350,8 +513,6 @@ export function useMatchScoreReporting(
 
   const mutation = useMutation({
     mutationFn: async (report: ScoreSubmission) => {
-      // Small debounce to avoid double-submissions on fast taps, and to
-      // simulate the server round trip that resolves the report.
       await new Promise((resolve) => setTimeout(resolve, 900));
 
       if (

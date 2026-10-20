@@ -11,13 +11,13 @@ use crate::service::notification_service::{NewNotification, NotificationRow, Not
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CreateNotificationRequest {
+pub struct CreateNotificationRequest {
     #[serde(rename = "type")]
-    typ: Option<String>,
-    title: String,
-    message: Option<String>,
-    link: Option<String>,
-    link_label: Option<String>,
+    pub typ: Option<String>,
+    pub title: String,
+    pub message: Option<String>,
+    pub link: Option<String>,
+    pub link_label: Option<String>,
 }
 
 fn notification_to_json(row: NotificationRow) -> serde_json::Value {

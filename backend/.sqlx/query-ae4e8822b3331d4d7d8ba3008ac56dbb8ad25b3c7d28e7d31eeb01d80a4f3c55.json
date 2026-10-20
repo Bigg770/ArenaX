@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE matches\n            SET player1_elo_after = $1, player2_elo_after = $2, updated_at = $3\n            WHERE id = $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ae4e8822b3331d4d7d8ba3008ac56dbb8ad25b3c7d28e7d31eeb01d80a4f3c55"
+}
