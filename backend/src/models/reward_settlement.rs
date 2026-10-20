@@ -43,8 +43,8 @@ impl PrizeDistributionEventV2 {
             return Err("fee exceeds the basis-point denominator".to_string());
         }
 
-        if self.gross_amount < 0 || self.fee_amount < 0 || self.rounding_remainder < 0 {
-            return Err("amounts must not be negative".to_string());
+        if self.gross_amount <= 0 || self.fee_amount < 0 || self.rounding_remainder < 0 {
+            return Err("gross amount must be positive and other amounts non-negative".to_string());
         }
         let expected_fee = self.gross_amount
             .checked_mul(i128::from(self.fee_bps))
@@ -103,7 +103,6 @@ impl PrizeDistributionEventV2 {
         }
         if self.fee_amount
             .checked_add(total_winners)
-            .and_then(|value| value.checked_add(self.rounding_remainder))
             != Some(self.gross_amount)
         {
             return Err("payout amounts do not reconcile to the gross pool".to_string());
