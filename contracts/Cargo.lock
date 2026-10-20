@@ -2024,6 +2024,7 @@ dependencies = [
 name = "tournament-escrow"
 version = "0.1.0"
 dependencies = [
+ "arenax-events",
  "soroban-sdk",
 ]
 
