@@ -50,6 +50,62 @@ jobs:
         working-directory: backend
         run: cargo test --locked
 
+  # Smart Contracts CI — Reproducible & blocking builds (#51)
+  contracts:
+    name: Contracts (Soroban)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-contracts-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace
+
+      - name: Build optimized Wasm contracts
+        run: cargo build --locked --workspace --target wasm32-unknown-unknown --release
+
+      - name: Generate release artifact metadata
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          ./scripts/build-release-artifacts.sh
+
+      - name: Upload contract build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soroban-contract-artifacts
+          path: |
+            contracts/target/wasm32-unknown-unknown/release/*.wasm
+            contracts/target/wasm32-unknown-unknown/release/artifact-metadata.json
+          retention-days: 7
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -69,13 +125,13 @@ jobs:
       - name: Lint
         run: npm run lint
 
-    - name: Upload Playwright report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: playwright-report
-        path: frontend/playwright-report/
-        retention-days: 7
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
 
   # Transactional rollout/rollback gate (#96)
   #
