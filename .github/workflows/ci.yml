@@ -201,29 +201,40 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15
+        image: postgres:16-alpine
         env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-      # The realtime/session tests connect to Redis at 127.0.0.1:6379.
+          --health-retries 20
       redis:
-        image: redis:7
+        image: redis:7-alpine
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-
+          --health-retries 20
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: test
+          MINIO_ROOT_PASSWORD: testtest
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        command: server /data
     env:
       DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
       REDIS_URL: redis://localhost:6379

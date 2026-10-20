@@ -190,25 +190,8 @@ CI runs without `continue-on-error` on `backend-build`, strictly enforcing that 
 ### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/arenax/arenax.git
-cd backend
-
-# Install Rust dependencies
-cargo build
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Run database migrations
-./scripts/migrate.sh
-
-# Start the backend server
-cargo run
-
-# Or run with Docker Compose
-docker-compose up -d
+# Requires a Docker daemon for testcontainers.
+cargo test --all-features -- --test-threads=8
 ```
 
 ### Development & CI Commands
@@ -232,23 +215,21 @@ cargo test auth::tests
 # Check code formatting
 cargo fmt
 
-# Run linter
-cargo clippy
+## Service SLOs, Alerts & Runbooks
 
-# Run local CI tests
-./test_ci_locally.sh
+Operational targets are tied to player-impacting workflows rather than generic health
+indicators. Each SLO below has a measured signal, evaluation window, owner, and an
+error-budget response. Signals are emitted by `src/telemetry.rs` (structured request
+metrics) and surfaced in the dashboards described in [docs/OBSERVABILITY.md](../docs/OBSERVABILITY.md).
 
-# Database operations
-sqlx migrate add -r <migration_name>
-./scripts/verify-migrations.sh
-./scripts/migrate.sh
-./scripts/migration-status.sh
-./scripts/backup-database.sh
-./scripts/rollback-last-migration.sh
+### SLO Definitions
 
-# Stellar integration testing
-./scripts/test_stellar.sh
-```
+| Workflow | SLI (measured signal) | SLO target | Window | Owner |
+| --- | --- | --- | --- | --- |
+| **Login** | Ratio of `POST /auth/login` responses with status < 500 and p95 latency | 99.9% success, p95 < 400 ms | 30 days (rolling) | Auth team |
+| **Tournament join** | Ratio of `POST /tournaments/{id}/join` responses with status < 500 and p95 latency | 99.5% success, p95 < 800 ms | 30 days (rolling) | Tournament team |
+| **Match updates** | Ratio of `PATCH /matches/{id}` (score/state) responses with status < 500 and p95 latency | 99.5% success, p95 < 500 ms | 30 days (rolling) | Match team |
+| **Settlement** | Ratio of settlement jobs completing without error and p95 job duration | 99.0% success, p95 < 5 s | 30 days (rolling) | Wallet team |
 
 ### SQLx Offline Compilation & Query Metadata Workflow
 
@@ -322,229 +303,94 @@ SOROBAN_CONTRACT_REPUTATION=CBXXX...
 AI_MODEL_PATH=./models/anti_cheat.tflite
 ```
 
-`BACKEND_MIGRATION_MODE` defaults to `run`, which applies and validates SQLx migrations during backend startup. Use `disabled` only when migrations are applied by a separate deployment step. See [MIGRATIONS.md](MIGRATIONS.md) for the full migration workflow, rollback process, and CI expectations.
+Each SLO carries a 30-day error budget (`1 - SLO target`). Response is burn-rate driven:
 
-## Code Organization & Architecture
+- **< 50% budget consumed**: normal operation, no action.
+- **50–75% consumed**: owner reviews recent error sources weekly; file follow-ups for top contributors.
+- **75–100% consumed**: freeze non-critical changes to the affected workflow; owner prioritizes reliability fixes.
+- **Budget exhausted**: feature work on the workflow pauses until the budget recovers; incident review required.
 
-### Module Structure
-The backend follows a clean architecture pattern with clear separation of concerns:
+### Alert Thresholds
 
-- **`api_error.rs`**: Centralized error handling with custom error types and HTTP status mapping
-- **`config.rs`**: Environment configuration management with validation and defaults
-- **`db.rs`**: Database connection pooling, transaction management, and connection health checks
-- **`lib.rs`**: Public API exports and library initialization
-- **`main.rs`**: Application entry point, server startup, and graceful shutdown
-- **`middleware.rs`**: Custom middleware for authentication, logging, CORS, and rate limiting
-- **`telemetry.rs`**: Structured logging, tracing, metrics collection, and observability setup
+Alerts are derived from the SLOs and use multi-window burn rates so transient noise does
+not page. A page fires only when **both** a fast (5 min) and slow (1 h) window exceed the
+threshold; single-window spikes route to the team channel instead of paging.
 
-### Service Layer Pattern
-Each service follows a consistent pattern:
-- **HTTP Handlers** (`http/`): Request/response handling, input validation, and error mapping
-- **Service Layer** (`service/`): Business logic, data transformation, and external service integration
-- **Database Models**: Data access layer with SQLx for type-safe database operations
+| Alert | Condition | Severity |
+| --- | --- | --- |
+| `LoginErrorBudgetFastBurn` | 5 min error rate > 14.4x budget **and** 1 h error rate > 14.4x budget | Page |
+| `LoginLatencyDegraded` | p95 > 400 ms sustained for 10 min | Ticket |
+| `TournamentJoinFastBurn` | 5 min error rate > 14.4x budget **and** 1 h error rate > 14.4x budget | Page |
+| `MatchUpdateFastBurn` | 5 min error rate > 14.4x budget **and** 1 h error rate > 14.4x budget | Page |
+| `SettlementFastBurn` | 5 min failure rate > 14.4x budget **and** 1 h failure rate > 14.4x budget | Page |
+| `SettlementBacklog` | pending settlements > 100 for 15 min | Ticket |
 
-### Error Handling Strategy
-- **Custom Error Types**: Domain-specific error types with proper HTTP status codes
-- **Error Propagation**: Proper error chaining and context preservation
-- **Logging Integration**: Structured error logging with correlation IDs
-- **Client Responses**: Consistent JSON error responses with appropriate status codes
+Transient single-request failures, brief latency blips, and deploy-window noise are
+excluded via the sustained-window requirement and a 5-minute deploy suppression.
 
-### Configuration Management
-- **Environment-based**: Different configurations for development, staging, and production
-- **Validation**: Runtime validation of required configuration values
-- **Secrets Management**: Secure handling of sensitive configuration data
-- **Hot Reloading**: Configuration updates without service restart (where applicable)
+### Runbooks
 
-## Core Services
+Each alert links to a runbook covering first checks, safe mitigations, escalation, and
+recovery verification.
 
-### 🔐 Auth Service
-- **Phone-based OTP**: Secure user registration and login
-- **JWT Sessions**: Token-based authentication
-- **Stellar Account Creation**: Automatic wallet setup for new users
-- **Device Fingerprinting**: Prevent multi-account abuse
+**Login (`LoginErrorBudgetFastBurn` / `LoginLatencyDegraded`)**
+1. *First checks*: confirm auth service health, DB connection pool saturation, and recent deploys in the last 30 min.
+2. *Safe mitigations*: roll back the last auth deploy if correlated; scale auth replicas; verify Redis session store reachable.
+3. *Escalation*: page Auth on-call; escalate to platform on-call if DB or Redis is the root cause.
+4. *Recovery verification*: error rate back under budget for 30 min and p95 < 400 ms on the dashboard.
 
-**Key Endpoints**:
-- `POST /auth/signup` - Register with phone number
-- `POST /auth/verify` - Verify OTP and create Stellar account
-- `GET /auth/me` - Get user profile and Stellar public key
+**Tournament join (`TournamentJoinFastBurn`)**
+1. *First checks*: tournament service health, DB write latency, and lock contention on tournament rows.
+2. *Safe mitigations*: shed load via rate limiting; disable non-essential join side effects; roll back recent tournament deploy.
+3. *Escalation*: Tournament on-call; platform on-call for DB issues.
+4. *Recovery verification*: join success rate ≥ 99.5% over 30 min and p95 < 800 ms.
 
-### 🏆 Tournament Service
-- **Tournament Management**: Create, update, and manage tournaments
-- **Prize Pool Management**: Stellar-based prize pool handling
-- **Entry Fee Processing**: Accept fiat and ArenaX Token payments
-- **Real-time Updates**: Live tournament status updates
+**Match updates (`MatchUpdateFastBurn`)**
+1. *First checks*: match service health, Redis Pub/Sub lag, and downstream anti-cheat latency.
+2. *Safe mitigations*: decouple anti-cheat scoring to async if blocking; roll back recent match deploy; scale match replicas.
+3. *Escalation*: Match on-call; anti-cheat owner if AI service is the bottleneck.
+4. *Recovery verification*: update success rate ≥ 99.5% over 30 min and p95 < 500 ms.
 
-**Key Endpoints**:
-- `GET /tournaments` - List tournaments with Stellar prize pools
-- `POST /tournaments/:id/join` - Join tournament with payment
-- `GET /tournaments/:id` - Get tournament details
+**Settlement (`SettlementFastBurn` / `SettlementBacklog`)**
+1. *First checks*: Stellar Horizon reachability, wallet service health, and settlement job queue depth.
+2. *Safe mitigations*: pause new settlement submissions; retry failed jobs idempotently; fail over to backup Horizon endpoint.
+3. *Escalation*: Wallet on-call; escalate to Stellar integration owner for chain-side failures.
+4. *Recovery verification*: settlement success rate ≥ 99.0% over 30 min, backlog drained, and p95 job duration < 5 s.
 
-### 🎮 Match Service
-- **Elo Matchmaking**: Skill-based player pairing
-- **Score Reporting**: Handle score submissions with proof
-- **Dispute System**: Manage match disputes and admin review
-- **Real-time Updates**: Live match status and results
+### Staging Validation
 
-**Key Endpoints**:
-- `POST /matches/:id/report` - Submit match score
-- `POST /matches/:id/dispute` - Dispute match result
-- `GET /matches/:id` - Get match details and Stellar records
+To validate alerts and runbooks, simulate one dependency outage in staging:
 
-### 💰 Wallet Service
-- **Payment Processing**: Handle Paystack/Flutterwave payments
-- **Stellar Integration**: Manage XLM and custom asset balances
-- **Payout Processing**: Automated prize distribution
-- **Transaction History**: Complete payment and Stellar transaction logs
+1. Block egress to Stellar Horizon (or stop Redis) in the staging environment.
+2. Confirm the corresponding burn-rate alert fires within the fast window and pages the correct owner.
+3. Walk the runbook end-to-end: perform first checks, apply a safe mitigation, and verify escalation routing.
+4. Restore the dependency and confirm recovery verification steps pass (error rate and latency back within SLO).
+5. Record gaps found in the runbook and update it before the next drill.
 
-**Key Endpoints**:
-- `GET /wallet` - View balances and transaction history
-- `POST /wallet/deposit` - Process fiat deposits
-- `POST /wallet/payout/stellar` - Initiate Stellar payouts
-- `GET /wallet/payout/status/:tx_id` - Check payout status
+## Project Structure
 
-### 🤖 Anti-Cheat Service
-- **AI Analysis**: ML-powered cheating detection
-- **Screenshot Analysis**: Detect manipulated images
-- **Telemetry Analysis**: Identify abnormal gameplay patterns
-- **Automated Flagging**: Flag suspicious activity for review
-
-**Key Endpoints**:
-- `POST /matches/:id/analyze` - Submit telemetry for analysis
-- `GET /matches/:id/analysis` - Get anti-cheat results
-
-### 🏅 Leaderboard Service
-- **Real-time Rankings**: Live player leaderboards
-- **Reputation Tracking**: Stellar-based reputation system
-- **Periodic Updates**: Weekly/monthly leaderboard calculations
-- **Redis Caching**: High-performance leaderboard queries
-
-**Key Endpoints**:
-- `GET /leaderboard?period=weekly` - Get leaderboard with reputation
-
-## Stellar Blockchain Integration
-
-### Account Management
-- **User Accounts**: Automatic Stellar account creation
-- **Multi-signature**: Secure tournament prize pool accounts
-- **Key Management**: Encrypted secret key storage
-
-### Custom Assets
-- **ArenaX Tokens**: In-platform rewards and tournament fees
-- **Reputation Tokens**: Player fairness and skill tracking
-- **Asset Issuance**: Automated token creation and distribution
-
-### Smart Contracts (Soroban)
-- **Prize Distribution**: Automated tournament payouts
-- **Reputation Management**: Track and update player reputation
-- **Escrow Management**: Secure prize pool handling
-
-### Transaction Processing
-- **Batch Operations**: Efficient bulk transaction processing
-- **Fee Optimization**: Minimize Stellar network fees
-- **Status Tracking**: Real-time transaction monitoring
-
-## Database Schema
-
-### Core Tables
-- `users` - User profiles and Stellar account info
-- `tournaments` - Tournament data and prize pools
-- `matches` - Match records and results
-- `wallets` - Payment and Stellar balance info
-- `transactions` - Payment and Stellar transaction logs
-- `leaderboards` - Player rankings and reputation
-
-### Stellar Integration Tables
-- `stellar_accounts` - User Stellar account details
-- `stellar_transactions` - Stellar transaction records
-- `custom_assets` - ArenaX and Reputation token info
-- `prize_pools` - Tournament prize pool management
-
-## API Documentation
-
-### Authentication
-All endpoints require proper authentication unless specified otherwise.
-
-### Error Handling
-Standardized JSON error responses:
-```json
-{
-  "error": "Error message",
-  "code": 400,
-  "details": "Additional error details"
-}
 ```
-
-### Rate Limiting
-- API endpoints have configurable rate limits
-- Stellar operations have separate rate limiting
-- Anti-cheat analysis has usage limits
-
-## Testing
-
-### Unit Tests
-```bash
-cargo test
-```
-
-### Integration Tests
-```bash
-cargo test --test integration
-```
-
-### Stellar Testnet Testing
-```bash
-# Test Stellar integration on testnet
-STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org cargo test
-```
-
-## Performance & Scalability
-
-### Database Optimization
-- **Sharding**: PostgreSQL sharded by tournament ID
-- **Connection Pooling**: Optimized database connections
-- **Indexing**: Strategic database indexes for performance
-
-### Caching Strategy
-- **Redis Caching**: Tournament data, leaderboards, user sessions
-- **TTL Management**: Appropriate cache expiration times
-- **Cache Invalidation**: Smart cache updates on data changes
-
-### Stellar Optimization
-- **Transaction Batching**: Group multiple operations
-- **Fee Management**: Optimize Stellar network fees
-- **Account Pooling**: Reuse Stellar accounts where possible
-
-## Monitoring & Observability
-
-### Metrics
-- **Prometheus**: Performance and business metrics
-- **Grafana**: Visualization and alerting
-- **Stellar Metrics**: Blockchain operation monitoring
-
-### Logging
-- **Structured Logging**: JSON-formatted logs
-- **Stellar Transactions**: Complete audit trail
-- **Error Tracking**: Comprehensive error monitoring
-
-## Security
-
-### Data Protection
-- **Encryption**: Sensitive data encryption at rest
-- **Stellar Keys**: Secure key management and storage
-- **API Security**: Rate limiting and input validation
-
-### Compliance
-- **Data Privacy**: Nigerian data protection compliance
-- **Stellar Compliance**: KYC/AML requirements
-- **Audit Logging**: Complete transaction audit trail
-
-## Deployment
-
-### Docker Deployment
-```bash
-# Build and run with Docker Compose
-docker-compose up -d
-```
+backend/
+├── src/
+│   ├── api_error.rs       # Centralized error handling and API error types
+│   ├── config.rs          # Configuration management and environment variables
+│   ├── db.rs              # Database connection and connection pooling
+│   ├── lib.rs             # Library root and public API exports
+│   ├── main.rs            # Application entry point and server startup
+│   ├── middleware.rs      # Custom middleware implementations
+│   ├── telemetry.rs       # Logging, tracing, and observability setup
+│   ├── auth/              # Authentication and authorization modules
+│   │   ├── mod.rs         # Auth module exports
+│   │   ├── jwt.rs         # JWT token handling
+│   │   ├── stellar.rs     # Stellar account management
+│   │   └── otp.rs         # OTP verification system
+│   ├── http/              # HTTP handlers and route definitions
+│   │   ├── mod.rs         # HTTP module exports
+│   │   ├── auth.rs        # Authentication endpoints
+│   │   ├── tournaments.rs # Tournament management endpoints
+│   │   ├── matches.rs     # Match and matchmaking endpoints
+│   │   ├── wallet.rs      # Payment and Stellar integration endpoints
+│   │   ├── lead
 
 ### Production Considerations
 - **Load Balancing**: Multiple backend instances
