@@ -11,6 +11,8 @@
     "lint": "next lint && npm run check:routes",
     "check:routes": "node scripts/check-no-duplicate-routes.mjs",
     "check:pwa-assets": "node scripts/check-pwa-assets.js",
+    "check:perf-budgets": "node scripts/check-perf-budgets.mjs",
+    "lighthouse": "lhci autorun --config=./lighthouserc.json",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "playwright test",

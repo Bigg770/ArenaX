@@ -11,8 +11,10 @@ import {
   useMatchWebSocket,
 } from "@/hooks/useMatchWebSocket";
 import { useMatch } from "@/hooks/useMatches";
-import { MatchDetailView } from "@/components/match/MatchDetailView";
-import { SpectatorMode } from "@/components/match/SpectatorMode";
+import {
+  DynamicMatchDetailView,
+  DynamicSpectatorMode,
+} from "@/lib/dynamicImports";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -219,7 +221,7 @@ function MatchHubPageContent() {
               Back
             </Button>
           </div>
-          <MatchDetailView
+          <DynamicMatchDetailView
             match={matchDetail}
             currentUserId={currentUserId}
             onReportIssue={() => {
@@ -261,7 +263,7 @@ function MatchHubPageContent() {
     (isLive || isDisputed || match.status === "completed")
   ) {
     return (
-      <SpectatorMode
+      <DynamicSpectatorMode
         match={match as MatchHubDetails}
         currentUserId={currentUserId}
         currentUserName={user?.username ?? "Spectator"}
