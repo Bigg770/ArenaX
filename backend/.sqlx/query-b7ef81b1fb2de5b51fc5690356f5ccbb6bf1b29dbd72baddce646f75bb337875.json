@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    INSERT INTO match_authority (\n                        id, on_chain_match_id, player_a, player_b, state,\n                        last_chain_tx, idempotency_key, metadata\n                    ) VALUES (\n                        $1, $2, $3, $4, 'CREATED'::match_authority_state, $5, $6, $7\n                    )\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b7ef81b1fb2de5b51fc5690356f5ccbb6bf1b29dbd72baddce646f75bb337875"
+}

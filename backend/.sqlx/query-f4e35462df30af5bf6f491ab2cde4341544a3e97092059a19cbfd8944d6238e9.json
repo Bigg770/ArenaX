@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n            pp.total_amount as \"prize_pool_amount!\",\n            pp.currency as \"prize_pool_currency!\",\n            pp.distribution_percentages as \"distribution_percentages_json!\",\n            COALESCE(SUM(tp.prize_amount), 0) as \"distributed_amount!\"\n            FROM prize_pools pp\n            LEFT JOIN tournament_participants tp ON pp.tournament_id = tp.tournament_id AND tp.prize_amount IS NOT NULL\n            WHERE pp.tournament_id = $1\n            GROUP BY pp.total_amount, pp.currency, pp.distribution_percentages",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "prize_pool_amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "prize_pool_currency!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "distribution_percentages_json!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "distributed_amount!",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "f4e35462df30af5bf6f491ab2cde4341544a3e97092059a19cbfd8944d6238e9"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO wallets (id, user_id, balance_ngn, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "585bb2a8bd6ce7f5ae377a681b33a0f061d8ac50597d75d5fea6a9ea39c4e60a"
+}

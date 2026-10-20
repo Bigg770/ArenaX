@@ -29,7 +29,9 @@ fn create_test_env() -> (Env, Address, Address, Address) {
 fn initialize_contract(env: &Env, admin: &Address) -> Address {
     let contract_id = env.register(AxToken, ());
     let client = AxTokenClient::new(env, &contract_id);
+    env.mock_all_auths();
     client.initialize(admin);
+    env.set_auths(&[]);
     contract_id
 }
 
@@ -1104,4 +1106,49 @@ fn test_datakey_variants_storage_round_trip() {
         assert_eq!(got.len(), 1);
         assert_eq!(got.get(0).unwrap().delegatee, user2);
     });
+}
+
+#[test]
+fn authorized_minter_can_mint_and_burn_and_metadata_is_stable() {
+    let (env, admin, minter, recipient) = create_test_env();
+    let contract_id = initialize_contract(&env, &admin);
+    let client = AxTokenClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    client.set_minter(&minter, &true);
+    client.mint_as(&minter, &recipient, &100);
+    client.burn_as(&minter, &recipient, &40);
+
+    assert_eq!(client.balance(&recipient), 60);
+    assert_eq!(client.total_supply(), 60);
+    assert_eq!(client.decimals(), 7);
+    assert_eq!(client.name(), String::from_str(&env, "ArenaX"));
+    assert_eq!(client.symbol(), String::from_str(&env, "AX"));
+}
+
+#[test]
+#[should_panic]
+fn initialization_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AxToken, ());
+    AxTokenClient::new(&env, &contract_id).initialize(&admin);
+}
+
+#[test]
+fn allowance_transfer_spends_only_approved_amount() {
+    let (env, admin, owner, spender) = create_test_env();
+    let contract_id = initialize_contract(&env, &admin);
+    let client = AxTokenClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    client.mint(&owner, &100);
+    let expiration = env.ledger().sequence() + 5;
+    client.approve(&owner, &spender, &50, &expiration);
+    let recipient = Address::generate(&env);
+    client.transfer_from(&spender, &owner, &recipient, &30);
+
+    assert_eq!(client.allowance(&owner, &spender), 20);
+    assert_eq!(client.balance(&owner), 70);
+    assert_eq!(client.balance(&recipient), 30);
 }

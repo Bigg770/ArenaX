@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM matchmaking_queue\n            WHERE game = $1 AND game_mode = $2 AND status = $3\n            ORDER BY joined_at ASC\n            LIMIT 50\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "current_elo",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "min_elo",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "max_elo",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "joined_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "matched_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "match_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "7621180eff93c99ebc6e1be4a3d0c1ba33f7278b8a04f7def9d53c94829c483f"
+}

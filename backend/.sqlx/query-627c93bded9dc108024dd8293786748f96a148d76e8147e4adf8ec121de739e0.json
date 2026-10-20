@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE match_authority\n            SET state = 'COMPLETED'::match_authority_state,\n                winner = $1,\n                last_chain_tx = $2,\n                ended_at = NOW()\n            WHERE id = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "627c93bded9dc108024dd8293786748f96a148d76e8147e4adf8ec121de739e0"
+}

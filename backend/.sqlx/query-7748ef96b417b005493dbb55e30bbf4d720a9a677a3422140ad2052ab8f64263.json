@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE match_authority\n            SET state = 'DISPUTED'::match_authority_state,\n                last_chain_tx = $1\n            WHERE id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7748ef96b417b005493dbb55e30bbf4d720a9a677a3422140ad2052ab8f64263"
+}

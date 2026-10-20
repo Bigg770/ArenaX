@@ -12,7 +12,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "json"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "json", "ipnetwork"] }
 validator = { version = "0.20.0", features = ["derive"] }
 rust_decimal = { version = "1.40.0", features = ["db-postgres"] }
 actix-web = "4.12.1"
@@ -21,7 +21,7 @@ bcrypt = "0.15"
 actix = "0.13"
 actix-web-actors = "4.3"
 anyhow = "1.0"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std", "json"] }
 tracing-opentelemetry = "0.33"
@@ -48,6 +48,9 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["derive"] }
 # sqlx's ConnectOptions::log_slow_statements/log_statements take log::LevelFilter (#1084)
 log = "0.4"
+# Secure upload processing (#85): server-side content sniffing independent of
+# client-declared MIME types, plus object-key isolation for private storage.
+infer = "0.16"
 
 
 # Security: pin patched versions of transitive deps
@@ -58,24 +61,4 @@ sentry-tracing = "0.49.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
-# Load/saturation benchmark harness (#117): drives the auth, tournament browse/join,
-# match result, leaderboard, and wallet read endpoints against seeded data.
-hdrhistogram = "7.5"
-
-[[test]]
-name = "tournament_lifecycle_e2e"
-path = "tests/tournament_lifecycle_e2e.rs"
-required-features = ["integration-tests"]
-
-[[test]]
-name = "api_load_bench"
-path = "tests/api_load_bench.rs"
-required-features = ["load-bench"]
-
-[features]
-# Enables the deterministic end-to-end tournament lifecycle suite (#112).
-# Off by default so normal builds/tests never require a database or live chain.
-integration-tests = []
-# Enables the API load and saturation benchmark suite (#117).
-# Off by default so normal builds/tests never require a database or live chain.
-load-bench = []
+actix-http = "3.13"

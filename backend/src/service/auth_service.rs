@@ -174,15 +174,7 @@ impl AuthService {
 
         let user = sqlx::query_as!(
             User,
-            r#"
-            SELECT id, username, email, phone_number, display_name, avatar_url, bio,
-                   country_code, is_verified, is_active, role, created_at, updated_at,
-                   last_login_at, password_hash, profile_image_url, reputation_score,
-                   stellar_account_id, stellar_public_key, total_earnings, is_banned,
-                   banned_until, device_fingerprint, deleted_at
-            FROM users
-            WHERE email = $1
-            "#,
+            "SELECT * FROM users WHERE email = $1",
             request.email,
         )
         .fetch_optional(&self.pool)
@@ -320,15 +312,7 @@ impl AuthService {
     pub async fn get_user(&self, user_id: Uuid) -> Result<User, ApiError> {
         let user = sqlx::query_as!(
             User,
-            r#"
-            SELECT id, username, email, phone_number, display_name, avatar_url, bio,
-                   country_code, is_verified, is_active, role, created_at, updated_at,
-                   last_login_at, password_hash, profile_image_url, reputation_score,
-                   stellar_account_id, stellar_public_key, total_earnings, is_banned,
-                   banned_until, device_fingerprint, deleted_at
-            FROM users
-            WHERE id = $1
-            "#,
+            "SELECT * FROM users WHERE id = $1",
             user_id,
         )
         .fetch_optional(&self.pool)

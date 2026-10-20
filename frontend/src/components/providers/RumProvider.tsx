@@ -3,88 +3,100 @@
 import { useEffect } from "react";
 import { datadogRum } from "@datadog/browser-rum";
 import { useConsentStore } from "@/hooks/useConsentStore";
-
-const EMAIL_PATTERN = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
-const PHONE_PATTERN = /\+?\d[\d\s\-().]{7,}\d/g;
-
-function redactPii(value: string): string {
-    return value.replace(EMAIL_PATTERN, "[REDACTED]").replace(PHONE_PATTERN, "[REDACTED]");
-}
-
-function redactContext(value: unknown, seen = new WeakSet<object>()): unknown {
-    if (typeof value === "string") {
-        return redactPii(value);
-    }
-
-    if (Array.isArray(value)) {
-        return value.map((item) => redactContext(item, seen));
-    }
-
-    if (value && typeof value === "object") {
-        const obj = value as Record<string, unknown>;
-        if (seen.has(obj)) return value;
-        seen.add(obj);
-
-        const result: Record<string, unknown> = {};
-        for (const key of Object.keys(obj)) {
-            result[key] = redactContext(obj[key], seen);
-        }
-        return result;
-    }
-
-    return value;
-}
+import { redactContext, redactPii, scrubUrl } from "@/lib/pii";
 
 // Fallback flag in case the installed @datadog/browser-rum version doesn't
 // expose getInitConfiguration().
 let rumInitialized = false;
 
 function isRumInitialized(): boolean {
-    if (typeof datadogRum.getInitConfiguration === "function") {
-        return Boolean(datadogRum.getInitConfiguration());
-    }
-    return rumInitialized;
+  if (typeof datadogRum.getInitConfiguration === "function") {
+    return Boolean(datadogRum.getInitConfiguration());
+  }
+  return rumInitialized;
 }
 
 export function RumProvider({ children }: { children: React.ReactNode }) {
-    const { hasAnalyticsConsent } = useConsentStore();
+  const { hasAnalyticsConsent } = useConsentStore();
 
-    useEffect(() => {
-        if (hasAnalyticsConsent) {
-            if (isRumInitialized()) return;
+  useEffect(() => {
+    if (hasAnalyticsConsent) {
+      if (isRumInitialized()) return;
 
-            datadogRum.init({
-                applicationId: process.env.NEXT_PUBLIC_DATADOG_APP_ID || 'dummy-app-id',
-                clientToken: process.env.NEXT_PUBLIC_DATADOG_CLIENT_TOKEN || 'dummy-client-token',
-                site: 'datadoghq.com',
-                service: 'arenax-frontend',
-                env: process.env.NODE_ENV,
-                version: process.env.NEXT_PUBLIC_APP_VERSION || '1.0.0',
-                sessionSampleRate: 100,
-                sessionReplaySampleRate: 20,
-                trackUserInteractions: true,
-                trackResources: true,
-                trackLongTasks: true,
-                defaultPrivacyLevel: 'mask-user-input',
-                beforeSend: (event) => {
-                    if (event.view?.url) {
-                        event.view.url = redactPii(event.view.url);
-                    }
-                    if (event.context) {
-                        event.context = redactContext(event.context) as typeof event.context;
-                    }
-                    return true;
-                },
-            });
-            rumInitialized = true;
-        } else if (isRumInitialized()) {
-            // Consent revoked (or never granted) — stop tracking and clear any
-            // identified user so no further data is collected/associated.
-            datadogRum.stopSession();
-            datadogRum.clearUser();
-            rumInitialized = false;
-        }
-    }, [hasAnalyticsConsent]);
+      const releaseVersion =
+        process.env.NEXT_PUBLIC_APP_VERSION ||
+        process.env.NEXT_PUBLIC_RELEASE_ID ||
+        "1.0.0";
+      const appEnv =
+        process.env.NEXT_PUBLIC_APP_ENV ||
+        process.env.NODE_ENV ||
+        "production";
 
-    return <>{children}</>;
+      datadogRum.init({
+        applicationId: process.env.NEXT_PUBLIC_DATADOG_APP_ID || "dummy-app-id",
+        clientToken: process.env.NEXT_PUBLIC_DATADOG_CLIENT_TOKEN || "dummy-client-token",
+        site: process.env.NEXT_PUBLIC_DATADOG_SITE || "datadoghq.com",
+        service: process.env.NEXT_PUBLIC_DATADOG_SERVICE || "arenax-frontend",
+        env: appEnv,
+        version: releaseVersion,
+        sessionSampleRate: Number(process.env.NEXT_PUBLIC_RUM_SAMPLE_RATE || "100"),
+        sessionReplaySampleRate: Number(process.env.NEXT_PUBLIC_REPLAY_SAMPLE_RATE || "20"),
+        trackUserInteractions: true,
+        trackResources: true,
+        trackLongTasks: true,
+        defaultPrivacyLevel: "mask-user-input",
+        beforeSend: (event) => {
+          // Scrub view URLs for query parameters containing tokens, OTPs, or evidence
+          if (event.view?.url) {
+            event.view.url = scrubUrl(event.view.url);
+          }
+
+          // Scrub general context
+          if (event.context) {
+            event.context = redactContext(event.context) as typeof event.context;
+          }
+
+          // Scrub error messages, stacks, and resource URLs if present
+          const eventAny = event as Record<string, unknown>;
+          if (eventAny.error && typeof eventAny.error === "object") {
+            const errObj = eventAny.error as Record<string, unknown>;
+            if (typeof errObj.message === "string") {
+              errObj.message = redactPii(errObj.message);
+            }
+            if (typeof errObj.stack === "string") {
+              errObj.stack = redactPii(errObj.stack);
+            }
+          }
+
+          if (eventAny.action && typeof eventAny.action === "object") {
+            const actObj = eventAny.action as Record<string, unknown>;
+            if (actObj.target && typeof actObj.target === "object") {
+              const tgt = actObj.target as Record<string, unknown>;
+              if (typeof tgt.name === "string") {
+                tgt.name = redactPii(tgt.name);
+              }
+            }
+          }
+
+          if (eventAny.resource && typeof eventAny.resource === "object") {
+            const resObj = eventAny.resource as Record<string, unknown>;
+            if (typeof resObj.url === "string") {
+              resObj.url = scrubUrl(resObj.url);
+            }
+          }
+
+          return true;
+        },
+      });
+      rumInitialized = true;
+    } else if (isRumInitialized()) {
+      // Consent revoked (or never granted) — stop tracking and clear any
+      // identified user so no further data is collected/associated.
+      datadogRum.stopSession();
+      datadogRum.clearUser();
+      rumInitialized = false;
+    }
+  }, [hasAnalyticsConsent]);
+
+  return <>{children}</>;
 }

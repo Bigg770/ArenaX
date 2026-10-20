@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                COUNT(*)                                    AS \"total_matches!: i64\",\n                COUNT(*) FILTER (WHERE result = 0)          AS \"wins!: i64\",\n                COUNT(*) FILTER (WHERE result = 1)          AS \"losses!: i64\",\n                COUNT(*) FILTER (WHERE result = 2)          AS \"draws!: i64\",\n                MAX(created_at)                             AS \"last_played: DateTime<Utc>\"\n            FROM elo_history\n            WHERE user_id     = $1\n              AND opponent_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_matches!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "wins!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "losses!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "draws!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_played: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "89ac32209ee366860a8a38046f5104be709d903c3d97ee389fabf9114f8b9097"
+}
