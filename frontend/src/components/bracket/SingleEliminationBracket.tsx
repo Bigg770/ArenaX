@@ -1,21 +1,24 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   BracketData,
   BracketMatch,
   BracketRound,
-  BracketSection,
 } from "@/types/bracket";
 import { BracketMatchModal } from "./BracketMatchModal";
 import {
   Activity,
   AlertTriangle,
+  CheckCircle2,
   ChevronRight,
   Clock3,
-  Eye,
+  HelpCircle,
+  LayoutGrid,
+  ListFilter,
   Sparkles,
+  Table as TableIcon,
   Trophy,
   User,
 } from "lucide-react";
@@ -38,9 +41,12 @@ export function bracketMatchDomId(matchId: string): string {
 
 const ROUND_WIDTH = 280;
 const ROUND_GAP = 56;
-const MATCH_HEIGHT = 114;
+const MATCH_HEIGHT = 120;
 const VERTICAL_GAP = 28;
 const COLUMN_HEADER_HEIGHT = 56;
+
+/** Threshold for switching huge brackets to round-bounded DOM rendering (#32) */
+const LARGE_BRACKET_MATCH_THRESHOLD = 32;
 
 export function SingleEliminationBracket({
   bracketData,
@@ -48,6 +54,9 @@ export function SingleEliminationBracket({
   highlightedMatchId,
 }: SingleEliminationBracketProps) {
   const [selectedMatch, setSelectedMatch] = useState<BracketMatch | null>(null);
+  const [viewMode, setViewMode] = useState<"tree" | "rounds" | "table">("tree");
+  const [activeRoundNumber, setActiveRoundNumber] = useState<number>(1);
+  const roundTabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Deep link (#1089): scroll the shared match into view once its card exists.
   useEffect(() => {
@@ -76,10 +85,52 @@ export function SingleEliminationBracket({
     };
   }, [bracketData, currentUserId]);
 
+  const primarySection = processedBracketData.sections[0];
+  const allRounds = useMemo(() => {
+    return primarySection?.rounds ?? [];
+  }, [primarySection]);
+
+  const totalMatches = useMemo(() => {
+    return allRounds.reduce((acc, r) => acc + r.matches.length, 0);
+  }, [allRounds]);
+
+  const isLargeBracket = totalMatches > LARGE_BRACKET_MATCH_THRESHOLD;
+
+  const selectedRound = useMemo(() => {
+    return allRounds.find((r) => r.roundNumber === activeRoundNumber) ?? allRounds[0];
+  }, [allRounds, activeRoundNumber]);
+
+  // Keyboard navigation across round tabs (#32)
+  const handleRoundTabKeyDown = (
+    e: React.KeyboardEvent,
+    index: number,
+  ) => {
+    let nextIndex = index;
+    if (e.key === "ArrowRight") {
+      nextIndex = (index + 1) % allRounds.length;
+    } else if (e.key === "ArrowLeft") {
+      nextIndex = (index - 1 + allRounds.length) % allRounds.length;
+    } else if (e.key === "Home") {
+      nextIndex = 0;
+    } else if (e.key === "End") {
+      nextIndex = allRounds.length - 1;
+    } else {
+      return;
+    }
+
+    e.preventDefault();
+    const targetRound = allRounds[nextIndex];
+    if (targetRound) {
+      setActiveRoundNumber(targetRound.roundNumber);
+      roundTabRefs.current[nextIndex]?.focus();
+    }
+  };
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-8" role="region" aria-label="Tournament Bracket Progression">
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
         <div className="rounded-[28px] border border-border/80 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.12),_transparent_28%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(30,41,59,0.96))] p-4 text-white shadow-[0_30px_80px_-45px_rgba(14,165,233,0.65)] sm:p-6">
+          {/* Header & Controls */}
           <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/70">
@@ -87,385 +138,504 @@ export function SingleEliminationBracket({
               </p>
               <h3 className="mt-1 text-2xl font-semibold">
                 {processedBracketData.format === "double_elimination"
-                  ? "Interactive Double Elimination View"
-                  : "Interactive Single Elimination View"}
+                  ? "Interactive Double Elimination Bracket"
+                  : "Interactive Single Elimination Bracket"}
               </h3>
-              <p className="mt-2 max-w-2xl text-sm text-foreground/80">
-                Live-active matches glow, user paths are accented, and every node opens richer match intelligence.
+              <p className="mt-2 max-w-2xl text-sm text-slate-300">
+                Accessible match progression with text labels, round navigation, and semantic list alternatives.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs text-slate-200">
-              <LegendPill icon={<Sparkles className="h-3.5 w-3.5" />} label="Your path" className="border-cyan-400/40 bg-cyan-400/10" />
-              <LegendPill icon={<Activity className="h-3.5 w-3.5" />} label="Live match" className="border-emerald-400/40 bg-emerald-400/10" />
-              <LegendPill icon={<AlertTriangle className="h-3.5 w-3.5" />} label="Dispute" className="border-rose-400/40 bg-rose-400/10" />
+
+            {/* View Mode Switcher (#32) */}
+            <div
+              className="flex items-center rounded-xl border border-white/10 bg-slate-900/80 p-1"
+              role="group"
+              aria-label="Bracket view options"
+            >
+              <button
+                type="button"
+                onClick={() => setViewMode("tree")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                  viewMode === "tree"
+                    ? "bg-primary text-white shadow-sm"
+                    : "text-slate-400 hover:text-white",
+                )}
+                aria-pressed={viewMode === "tree"}
+                title="Interactive Visual Tree View"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Tree</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("rounds")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                  viewMode === "rounds"
+                    ? "bg-primary text-white shadow-sm"
+                    : "text-slate-400 hover:text-white",
+                )}
+                aria-pressed={viewMode === "rounds"}
+                title="Round-by-Round Bounded View"
+              >
+                <ListFilter className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Rounds</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("table")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                  viewMode === "table"
+                    ? "bg-primary text-white shadow-sm"
+                    : "text-slate-400 hover:text-white",
+                )}
+                aria-pressed={viewMode === "table"}
+                title="Semantic Accessible Table Alternative"
+              >
+                <TableIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Table</span>
+              </button>
             </div>
           </div>
 
-          <div className="space-y-8 overflow-x-auto pb-3">
-            {processedBracketData.sections.map((section) => (
-              <BracketSectionBoard
-                key={section.id}
-                section={section}
-                activeMatchIds={processedBracketData.activeMatchIds ?? []}
-                onMatchClick={setSelectedMatch}
-                highlightedMatchId={highlightedMatchId ?? null}
-              />
-            ))}
+          {/* Accessible Legend with Text Labels (#32) */}
+          <div className="mb-6 flex flex-wrap gap-2 text-xs text-slate-200" aria-label="Bracket status guide">
+            <LegendPill icon={<Sparkles className="h-3.5 w-3.5" />} label="Your match" className="border-cyan-400/40 bg-cyan-400/10" />
+            <LegendPill icon={<Activity className="h-3.5 w-3.5" />} label="In progress (Live)" className="border-emerald-400/40 bg-emerald-400/10" />
+            <LegendPill icon={<CheckCircle2 className="h-3.5 w-3.5" />} label="Completed result" className="border-blue-400/40 bg-blue-400/10" />
+            <LegendPill icon={<AlertTriangle className="h-3.5 w-3.5" />} label="Dispute pending" className="border-rose-400/40 bg-rose-400/10" />
+            <LegendPill icon={<Clock3 className="h-3.5 w-3.5" />} label="Pending schedule" className="border-slate-500/40 bg-slate-500/10" />
+            <LegendPill icon={<HelpCircle className="h-3.5 w-3.5" />} label="Bye (Auto advance)" className="border-amber-400/40 bg-amber-400/10" />
           </div>
+
+          {/* Round Selector Bar (Keyboard Accessible Tablist) */}
+          {allRounds.length > 0 && (
+            <div className="mb-4">
+              <div
+                className="flex gap-2 overflow-x-auto pb-2 scrollbar-none"
+                role="tablist"
+                aria-label="Tournament rounds"
+              >
+                {allRounds.map((round, idx) => {
+                  const isSelected = round.roundNumber === activeRoundNumber;
+                  return (
+                    <button
+                      key={round.id}
+                      ref={(el) => {
+                        roundTabRefs.current[idx] = el;
+                      }}
+                      role="tab"
+                      id={`round-tab-${round.roundNumber}`}
+                      aria-selected={isSelected}
+                      aria-controls={`round-panel-${round.roundNumber}`}
+                      tabIndex={isSelected ? 0 : -1}
+                      type="button"
+                      onClick={() => setActiveRoundNumber(round.roundNumber)}
+                      onKeyDown={(e) => handleRoundTabKeyDown(e, idx)}
+                      className={cn(
+                        "rounded-xl border px-4 py-2 text-xs font-semibold uppercase tracking-wider transition-all min-h-[38px] whitespace-nowrap",
+                        isSelected
+                          ? "border-cyan-400/80 bg-cyan-400/20 text-white shadow-sm ring-1 ring-cyan-400"
+                          : "border-white/10 bg-slate-900/60 text-slate-400 hover:border-white/20 hover:text-white",
+                      )}
+                    >
+                      {round.name || `Round ${round.roundNumber}`}
+                      <span className="ml-1.5 text-[10px] text-slate-400">
+                        ({round.matches.length})
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ─────────────────────────────────────────────────────────────── */}
+          {/* VIEW MODE 1: Semantic Accessible Table View (#32)              */}
+          {/* ─────────────────────────────────────────────────────────────── */}
+          {viewMode === "table" ? (
+            <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+              <table
+                className="w-full text-left text-sm text-slate-200"
+                role="table"
+                aria-label="Accessible Tournament Bracket Match Schedule and Results"
+              >
+                <caption className="sr-only">
+                  List of all tournament matches, participants, scores, and status outcomes
+                </caption>
+                <thead className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
+                  <tr>
+                    <th scope="col" className="py-3 px-3">Round</th>
+                    <th scope="col" className="py-3 px-3">Match</th>
+                    <th scope="col" className="py-3 px-3">Player 1</th>
+                    <th scope="col" className="py-3 px-3">Player 2</th>
+                    <th scope="col" className="py-3 px-3">Status</th>
+                    <th scope="col" className="py-3 px-3">Score / Result</th>
+                    <th scope="col" className="py-3 px-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {allRounds.flatMap((round) =>
+                    round.matches.map((match) => {
+                      const isBye = Boolean(match.player1 && !match.player2);
+                      const isWinnerP1 = match.winnerId && match.player1?.id === match.winnerId;
+                      const isWinnerP2 = match.winnerId && match.player2?.id === match.winnerId;
+                      const statusText = getAccessibleMatchStatus(match, isBye);
+
+                      return (
+                        <tr
+                          key={match.id}
+                          className="hover:bg-white/5 transition-colors"
+                          tabIndex={0}
+                          aria-label={`Match ${match.id} in ${round.name}: ${match.player1?.username ?? "TBD"} versus ${match.player2?.username ?? (isBye ? "Bye" : "TBD")}. Status: ${statusText}`}
+                        >
+                          <td className="py-3 px-3 font-medium text-slate-300">
+                            {round.name}
+                          </td>
+                          <td className="py-3 px-3 text-xs text-slate-400 font-mono">
+                            #{match.id.slice(-6)}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className={cn(isWinnerP1 && "font-semibold text-emerald-300")}>
+                              {match.player1?.username ?? "Awaiting Result"}
+                              {match.player1?.isCurrentUser && " (You)"}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3">
+                            {isBye ? (
+                              <span className="text-amber-300 font-medium">
+                                [Bye - Advances automatically]
+                              </span>
+                            ) : (
+                              <span className={cn(isWinnerP2 && "font-semibold text-emerald-300")}>
+                                {match.player2?.username ?? "Awaiting Result"}
+                                {match.player2?.isCurrentUser && " (You)"}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">
+                            <MatchStatusBadge status={match.status} isBye={isBye} />
+                          </td>
+                          <td className="py-3 px-3 font-semibold">
+                            {typeof match.scorePlayer1 === "number" && typeof match.scorePlayer2 === "number"
+                              ? `${match.scorePlayer1} - ${match.scorePlayer2}`
+                              : isBye
+                              ? "Advancement"
+                              : "Pending"}
+                          </td>
+                          <td className="py-3 px-3">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedMatch(match)}
+                              className="rounded-lg bg-white/10 px-2.5 py-1 text-xs font-medium text-white hover:bg-white/20"
+                              aria-label={`View full details for match ${match.id}`}
+                            >
+                              Details
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    }),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : viewMode === "rounds" || isLargeBracket ? (
+            /* ───────────────────────────────────────────────────────────── */
+            /* VIEW MODE 2: Bounded Round View (avoids unbounded DOM #32)   */
+            /* ───────────────────────────────────────────────────────────── */
+            <div
+              id={`round-panel-${selectedRound?.roundNumber}`}
+              role="tabpanel"
+              aria-labelledby={`round-tab-${selectedRound?.roundNumber}`}
+              className="space-y-4"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <h4 className="text-sm font-semibold uppercase tracking-wider text-slate-200">
+                  {selectedRound?.name}
+                </h4>
+                <span className="text-xs text-slate-400">
+                  Showing {selectedRound?.matches.length ?? 0} matches
+                </span>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {selectedRound?.matches.map((match) => (
+                  <MatchCard
+                    key={match.id}
+                    match={match}
+                    onSelectMatch={setSelectedMatch}
+                    isHighlighted={highlightedMatchId === match.id}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* ───────────────────────────────────────────────────────────── */
+            /* VIEW MODE 3: Visual Interactive Tree View                    */
+            /* ───────────────────────────────────────────────────────────── */
+            <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+              <div
+                className="flex gap-14 min-w-max pb-4"
+                role="region"
+                aria-label="Single elimination progression tree"
+              >
+                {allRounds.map((round) => (
+                  <div key={round.id} className="w-[280px] flex-shrink-0 space-y-4">
+                    <div className="border-b border-white/10 pb-2">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+                        {round.name}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        {round.matches.length} {round.matches.length === 1 ? "match" : "matches"}
+                      </p>
+                    </div>
+                    <div className="flex flex-col justify-around gap-6">
+                      {round.matches.map((match) => (
+                        <MatchCard
+                          key={match.id}
+                          match={match}
+                          onSelectMatch={setSelectedMatch}
+                          isHighlighted={highlightedMatchId === match.id}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        <aside className="space-y-4">
-          <div className="rounded-[28px] border border-border bg-white p-5 shadow-sm">
-            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-              <Eye className="h-4 w-4 text-cyan-600" />
-              ArenaX View State
+        {/* Sidebar Summary & Stats */}
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border bg-card p-5 text-card-foreground">
+            <div className="flex items-center gap-3">
+              <Trophy className="h-5 w-5 text-primary" aria-hidden="true" />
+              <h4 className="text-base font-semibold">Tournament Overview</h4>
             </div>
-            <div className="mt-4 grid gap-3">
+            <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+              <StatCard label="Total Rounds" value={String(allRounds.length)} />
+              <StatCard label="Total Matches" value={String(totalMatches)} />
               <StatCard
-                label="Format"
-                value={
-                  processedBracketData.format === "double_elimination"
-                    ? "Double Elim"
-                    : "Single Elim"
-                }
+                label="Completed"
+                value={String(
+                  allRounds
+                    .flatMap((r) => r.matches)
+                    .filter((m) => m.status === "completed").length,
+                )}
               />
               <StatCard
-                label="Active Matches"
-                value={String(processedBracketData.activeMatchIds?.length ?? 0)}
-              />
-              <StatCard
-                label="Total Stages"
-                value={String(processedBracketData.totalRounds)}
+                label="Disputes"
+                value={String(
+                  allRounds
+                    .flatMap((r) => r.matches)
+                    .filter((m) => m.status === "disputed").length,
+                )}
               />
             </div>
           </div>
-
-          <div className="rounded-[28px] border border-border bg-white p-5 shadow-sm">
-            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-              <Trophy className="h-4 w-4 text-amber-500" />
-              Prize Distribution
-            </div>
-            <div className="mt-4 space-y-3">
-              {processedBracketData.prizeDistribution.map((prize) => (
-                <div
-                  key={prize.position}
-                  className="flex items-center justify-between rounded-2xl border border-border bg-slate-50 px-4 py-3"
-                >
-                  <div>
-                    <p className="font-medium text-foreground">
-                      {prize.label ?? `Top ${prize.position}`}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Position {prize.position}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-semibold text-foreground">
-                      {prize.amount !== undefined
-                        ? `$${prize.amount.toLocaleString()}`
-                        : `${prize.percentage}%`}
-                    </p>
-                    <p className="text-xs text-muted-foreground">{prize.percentage}%</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+        </div>
       </div>
 
-      {selectedMatch ? (
+      {/* Match Details Modal */}
+      {selectedMatch && (
         <BracketMatchModal
           match={selectedMatch}
-          isOpen={Boolean(selectedMatch)}
           onClose={() => setSelectedMatch(null)}
-          prizeDistribution={processedBracketData.prizeDistribution}
         />
-      ) : null}
+      )}
     </div>
   );
 }
 
-function BracketSectionBoard({
-  section,
-  activeMatchIds,
-  onMatchClick,
-  highlightedMatchId,
-}: {
-  section: BracketSection;
-  activeMatchIds: string[];
-  onMatchClick: (match: BracketMatch) => void;
-  highlightedMatchId?: string | null;
-}) {
-  const maxMatches = Math.max(...section.rounds.map((round) => round.matches.length));
-  const boardHeight = maxMatches * MATCH_HEIGHT + (maxMatches - 1) * VERTICAL_GAP;
-  const boardWidth =
-    section.rounds.length * ROUND_WIDTH + (section.rounds.length - 1) * ROUND_GAP;
-  const positions = calculatePositions(section.rounds, boardHeight);
-
-  return (
-    <section>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h4 className="text-lg font-semibold text-white">{section.title}</h4>
-          <p className="text-sm text-muted-foreground">
-            {section.type === "losers"
-              ? "Elimination pressure and comeback routes."
-              : section.type === "finals"
-                ? "Final qualification and payout stage."
-                : "Primary progression from opening rounds to the title."}
-          </p>
-        </div>
-      </div>
-
-      <div
-        className="relative min-w-max rounded-[28px] border border-white/10 bg-white/5 p-6"
-        style={{ width: boardWidth + 48, minHeight: boardHeight + COLUMN_HEADER_HEIGHT + 48 }}
-      >
-        <svg
-          width={boardWidth}
-          height={boardHeight}
-          className="pointer-events-none absolute left-6 overflow-visible"
-          style={{ top: 24 + COLUMN_HEADER_HEIGHT }}
-          aria-hidden="true"
-        >
-          {section.rounds.slice(0, -1).flatMap((round, roundIndex) =>
-            round.matches.map((match, matchIndex) => {
-              const nextRound = section.rounds[roundIndex + 1];
-              const nextMatchId = match.nextMatchId;
-              if (!nextMatchId) {
-                return null;
-              }
-              const nextMatchIndex = nextRound.matches.findIndex(
-                (candidate) => candidate.id === nextMatchId,
-              );
-              if (nextMatchIndex === -1) {
-                return null;
-              }
-
-              const startY = positions[roundIndex][matchIndex] + MATCH_HEIGHT / 2;
-              const endY = positions[roundIndex + 1][nextMatchIndex] + MATCH_HEIGHT / 2;
-              const startX = roundIndex * (ROUND_WIDTH + ROUND_GAP) + ROUND_WIDTH;
-              const endX = (roundIndex + 1) * (ROUND_WIDTH + ROUND_GAP);
-              const midX = startX + ROUND_GAP / 2;
-              const isLive = activeMatchIds.includes(match.id) || match.status === "in_progress";
-
-              return (
-                <path
-                  key={`${match.id}-${nextMatchId}`}
-                  d={`M ${startX} ${startY} H ${midX} V ${endY} H ${endX}`}
-                  fill="none"
-                  stroke={isLive ? "rgba(52, 211, 153, 0.95)" : "rgba(148, 163, 184, 0.45)"}
-                  strokeWidth={isLive ? 3 : 2}
-                  strokeLinecap="round"
-                />
-              );
-            }),
-          )}
-        </svg>
-
-        {section.rounds.map((round, roundIndex) => (
-          <div
-            key={`${section.id}-${round.roundNumber}`}
-            className="absolute top-6"
-            style={{
-              left: 24 + roundIndex * (ROUND_WIDTH + ROUND_GAP),
-              width: ROUND_WIDTH,
-            }}
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
-                  {round.shortLabel ?? `R${round.roundNumber}`}
-                </p>
-                <h5 className="text-sm font-semibold text-white">{round.roundName}</h5>
-              </div>
-              {roundIndex < section.rounds.length - 1 ? (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              ) : null}
-            </div>
-
-            <div className="relative">
-              {round.matches.map((match, matchIndex) => (
-                <div
-                  key={match.id}
-                  className="absolute left-0"
-                  style={{
-                    width: ROUND_WIDTH,
-                    top: positions[roundIndex][matchIndex],
-                  }}
-                >
-                  <MatchCard
-                    match={match}
-                    isActive={activeMatchIds.includes(match.id)}
-                    onClick={() => onMatchClick(match)}
-                    isHighlighted={match.id === highlightedMatchId}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
+// ─── Match Card Component (#32) ───────────────────────────────────────────────
 
 function MatchCard({
   match,
-  isActive,
-  onClick,
+  onSelectMatch,
   isHighlighted = false,
 }: {
   match: BracketMatch;
-  isActive: boolean;
-  onClick: () => void;
+  onSelectMatch: (match: BracketMatch) => void;
   isHighlighted?: boolean;
 }) {
-  const isCurrentUserMatch = Boolean(match.player1?.isCurrentUser || match.player2?.isCurrentUser);
+  const isBye = Boolean(match.player1 && !match.player2);
+  const statusLabel = getAccessibleMatchStatus(match, isBye);
+
+  const accessibleCardLabel = `Match #${match.id.slice(-6)}: ${match.player1?.username ?? "TBD"} versus ${
+    match.player2?.username ?? (isBye ? "Bye" : "TBD")
+  }. Status: ${statusLabel}. Score: ${
+    match.scorePlayer1 ?? 0
+  } to ${match.scorePlayer2 ?? 0}. Click or press enter for full details.`;
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelectMatch(match);
+    }
+  };
 
   return (
-    <div id={bracketMatchDomId(match.id)} className="group relative">
-      <button
-        type="button"
-        onClick={onClick}
-        className={cn(
-          "w-full rounded-[24px] border p-4 text-left transition duration-200",
-          "bg-slate-950/80 shadow-[0_16px_40px_-30px_rgba(15,23,42,1)]",
-          isCurrentUserMatch && "border-cyan-400/70 bg-cyan-400/10 shadow-[0_20px_50px_-35px_rgba(34,211,238,0.8)]",
-          isActive && "border-emerald-400/70 bg-emerald-400/10 shadow-[0_20px_50px_-35px_rgba(52,211,153,0.8)]",
-          match.status === "disputed" && "border-rose-400/70 bg-rose-500/10",
-          !isCurrentUserMatch && !isActive && match.status !== "disputed" && "border-white/10 hover:border-white/25 hover:bg-white/10",
-          isHighlighted && "ring-4 ring-amber-400 ring-offset-2 ring-offset-slate-950 animate-pulse",
-        )}
-      >
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
-              {match.label ?? `Match ${match.matchNumber}`}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {match.roundLabel ?? `Round ${match.round}`}
-            </p>
-          </div>
-          <MatchStatusBadge status={match.status} />
-        </div>
+    <div
+      id={bracketMatchDomId(match.id)}
+      role="button"
+      tabIndex={0}
+      aria-label={accessibleCardLabel}
+      onClick={() => onSelectMatch(match)}
+      onKeyDown={handleKeyDown}
+      className={cn(
+        "group relative flex flex-col justify-between rounded-2xl border p-3.5 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-400",
+        isHighlighted
+          ? "border-cyan-400 bg-cyan-950/40 shadow-lg shadow-cyan-500/20 ring-1 ring-cyan-400"
+          : "border-white/10 bg-slate-900/80 hover:border-white/25 hover:bg-slate-900",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-2">
+        <span className="font-mono text-[11px] text-slate-400">
+          #{match.id.slice(-6)}
+        </span>
+        <MatchStatusBadge status={match.status} isBye={isBye} />
+      </div>
 
+      <div className="mt-2 space-y-1.5">
         <PlayerRow
           player={match.player1}
           score={match.scorePlayer1}
-          winnerId={match.winnerId}
+          isWinner={Boolean(match.winnerId && match.player1?.id === match.winnerId)}
         />
         <PlayerRow
           player={match.player2}
           score={match.scorePlayer2}
-          winnerId={match.winnerId}
+          isWinner={Boolean(match.winnerId && match.player2?.id === match.winnerId)}
+          isBye={isBye}
         />
-
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-          {match.scheduledTime ? (
-            <span className="inline-flex items-center gap-1">
-              <Clock3 className="h-3.5 w-3.5" />
-              {formatTime(match.scheduledTime)}
-            </span>
-          ) : null}
-          {match.streamTitle ? (
-            <span className="rounded-full border border-white/10 px-2 py-1 text-[10px] text-foreground/80">
-              Stream
-            </span>
-          ) : null}
-          {match.isBye ? (
-            <span className="rounded-full border border-amber-400/30 px-2 py-1 text-[10px] text-amber-200">
-              Bye
-            </span>
-          ) : null}
-        </div>
-      </button>
-
-      <div className="pointer-events-none absolute left-1/2 top-full z-20 hidden w-72 -translate-x-1/2 pt-3 group-hover:block group-focus-within:block">
-        <div className="rounded-2xl border border-white/10 bg-slate-950/95 p-4 text-sm text-slate-200 shadow-2xl backdrop-blur">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.25em] text-cyan-200/70">
-            <Eye className="h-3.5 w-3.5" />
-            Quick Glance
-          </div>
-          <p className="mt-3 font-medium text-white">
-            {match.player1?.username ?? "TBD"} vs {match.player2?.username ?? "TBD"}
-          </p>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            {match.notes ?? "Open full details for player stats, reports, and payout context."}
-          </p>
-          {match.conflictReason ? (
-            <p className="mt-3 rounded-xl bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-              {match.conflictReason}
-            </p>
-          ) : null}
-        </div>
       </div>
+
+      {match.conflictReason && (
+        <div className="mt-2 rounded-lg bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300">
+          Dispute: {match.conflictReason}
+        </div>
+      )}
     </div>
   );
 }
+
+// ─── Player Row Component ─────────────────────────────────────────────────────
 
 function PlayerRow({
   player,
   score,
-  winnerId,
+  isWinner,
+  isBye = false,
 }: {
   player: BracketMatch["player1"];
   score?: number;
-  winnerId?: string;
+  isWinner: boolean;
+  isBye?: boolean;
 }) {
-  const isWinner = player?.id && winnerId === player.id;
+  if (isBye) {
+    return (
+      <div className="flex items-center justify-between rounded-xl bg-amber-500/10 px-2.5 py-1.5 text-amber-200">
+        <span className="text-xs font-semibold">[Bye - Advances automatically]</span>
+        <span className="text-xs uppercase tracking-wider text-amber-400">BYE</span>
+      </div>
+    );
+  }
 
   return (
     <div
       className={cn(
-        "mt-2 flex items-center justify-between rounded-2xl px-3 py-2",
-        isWinner ? "bg-emerald-500/15" : "bg-white/5",
+        "flex items-center justify-between rounded-xl px-2.5 py-1.5 transition-colors",
+        isWinner ? "bg-emerald-500/20 text-emerald-200" : "bg-white/5 text-slate-200",
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/5">
-          <User className="h-4 w-4 text-muted-foreground" />
+        <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-white/10 text-slate-400">
+          <User className="h-3.5 w-3.5" aria-hidden="true" />
         </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-white">
-            {player?.username ?? "Awaiting Result"}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {player
-              ? `Seed ${player.seed ?? "-"} | ${player.record ?? `ELO ${player.elo}`}`
-              : "Bracket slot pending"}
-          </p>
-        </div>
+        <p className="truncate text-xs font-medium">
+          {player?.username ?? "Awaiting Result"}
+          {player?.isCurrentUser && (
+            <span className="ml-1 text-[10px] text-cyan-300 uppercase tracking-wider font-semibold">
+              (You)
+            </span>
+          )}
+        </p>
       </div>
-      <div className="ml-3 text-right">
-        <div className="text-lg font-semibold text-white">
-          {typeof score === "number" ? score : "-"}
-        </div>
-        {player?.isCurrentUser ? (
-          <span className="text-[10px] uppercase tracking-[0.25em] text-cyan-200">
-            You
-          </span>
-        ) : null}
+      <div className="ml-2 font-mono text-xs font-semibold">
+        {typeof score === "number" ? score : "-"}
       </div>
     </div>
   );
 }
 
-function MatchStatusBadge({ status }: { status: BracketMatch["status"] }) {
-  const styles = {
-    pending: "bg-slate-500/15 text-slate-200",
-    ready: "bg-cyan-500/15 text-cyan-200",
-    in_progress: "bg-emerald-500/15 text-emerald-200",
-    completed: "bg-white/15 text-white",
-    disputed: "bg-rose-500/15 text-rose-200",
+// ─── Match Status Badge (Distinct Text Labels #32) ────────────────────────────
+
+function MatchStatusBadge({
+  status,
+  isBye = false,
+}: {
+  status: BracketMatch["status"];
+  isBye?: boolean;
+}) {
+  if (isBye) {
+    return (
+      <span className="rounded-full bg-amber-500/20 border border-amber-400/40 px-2 py-0.5 text-[10px] font-semibold text-amber-200 uppercase tracking-wider">
+        Bye
+      </span>
+    );
+  }
+
+  const badgeConfig = {
+    pending: {
+      label: "Pending",
+      className: "bg-slate-500/20 border border-slate-400/40 text-slate-300",
+    },
+    ready: {
+      label: "Ready",
+      className: "bg-cyan-500/20 border border-cyan-400/40 text-cyan-200",
+    },
+    in_progress: {
+      label: "Live Match",
+      className: "bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 animate-pulse",
+    },
+    completed: {
+      label: "Completed",
+      className: "bg-blue-500/20 border border-blue-400/40 text-blue-200",
+    },
+    disputed: {
+      label: "Disputed",
+      className: "bg-rose-500/20 border border-rose-400/40 text-rose-200 font-bold",
+    },
   } as const;
 
+  const conf = badgeConfig[status] ?? badgeConfig.pending;
+
   return (
-    <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.22em]", styles[status])}>
-      {status.replace("_", " ")}
+    <span
+      className={cn(
+        "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+        conf.className,
+      )}
+    >
+      {conf.label}
     </span>
   );
+}
+
+function getAccessibleMatchStatus(match: BracketMatch, isBye: boolean): string {
+  if (isBye) return "Bye - player automatically advances to the next round";
+  if (match.status === "disputed") {
+    return `Disputed: ${match.conflictReason ?? "Score dispute under investigation"}`;
+  }
+  if (match.status === "completed") {
+    return `Completed: Match concluded with final score ${match.scorePlayer1 ?? 0} to ${match.scorePlayer2 ?? 0}`;
+  }
+  if (match.status === "in_progress") return "In Progress - Live game ongoing";
+  if (match.status === "ready") return "Ready to start";
+  return "Pending - Waiting for previous match results";
 }
 
 function LegendPill({
@@ -478,7 +648,12 @@ function LegendPill({
   className?: string;
 }) {
   return (
-    <span className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1.5", className)}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium",
+        className,
+      )}
+    >
       {icon}
       {label}
     </span>
@@ -487,65 +662,9 @@ function LegendPill({
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-slate-50 px-4 py-3">
-      <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">{label}</p>
-      <p className="mt-2 text-lg font-semibold text-foreground">{value}</p>
+    <div className="rounded-xl border border-border bg-slate-50 dark:bg-slate-900 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="mt-1 text-base font-semibold text-foreground">{value}</p>
     </div>
   );
-}
-
-function calculatePositions(rounds: BracketRound[], boardHeight: number): number[][] {
-  const positions: number[][] = [];
-
-  rounds.forEach((round, roundIndex) => {
-    const roundHeight = round.matches.length * MATCH_HEIGHT + (round.matches.length - 1) * VERTICAL_GAP;
-
-    if (roundIndex === 0) {
-      positions.push(
-        round.matches.map((_, matchIndex) => matchIndex * (MATCH_HEIGHT + VERTICAL_GAP)),
-      );
-      return;
-    }
-
-    const previousRoundPositions = positions[roundIndex - 1];
-    positions.push(
-      round.matches.map((match, matchIndex) => {
-        const linkedPrevious = rounds[roundIndex - 1].matches
-          .map((previousMatch, previousIndex) => ({
-            previousMatch,
-            previousIndex,
-          }))
-          .filter(({ previousMatch }) => previousMatch.nextMatchId === match.id);
-
-        if (linkedPrevious.length >= 2) {
-          const first = previousRoundPositions[linkedPrevious[0].previousIndex] + MATCH_HEIGHT / 2;
-          const second = previousRoundPositions[linkedPrevious[1].previousIndex] + MATCH_HEIGHT / 2;
-          return (first + second) / 2 - MATCH_HEIGHT / 2;
-        }
-
-        if (linkedPrevious.length === 1) {
-          return previousRoundPositions[linkedPrevious[0].previousIndex];
-        }
-
-        if (round.matches.length === 1) {
-          return boardHeight / 2 - MATCH_HEIGHT / 2;
-        }
-
-        const spacing =
-          round.matches.length > 1
-            ? (boardHeight - roundHeight) / (round.matches.length - 1)
-            : 0;
-        return matchIndex * (MATCH_HEIGHT + spacing);
-      }),
-    );
-  });
-
-  return positions;
-}
-
-function formatTime(date: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(date));
 }

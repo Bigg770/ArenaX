@@ -70,6 +70,22 @@ fn deposit_moves_tokens_and_updates_counter() {
 }
 
 #[test]
+#[should_panic(expected = "exceeds per-operation cap")]
+fn spending_proposal_cannot_exceed_operation_cap() {
+    let env = Env::default();
+    let s = setup(&env);
+    s.client.set_operation_cap(&s.admin, &250);
+
+    s.client.create_spending_proposal(
+        &s.admin,
+        &Address::generate(&env),
+        &251,
+        &soroban_sdk::Symbol::new(&env, "ops"),
+        &soroban_sdk::String::from_str(&env, "over cap"),
+    );
+}
+
+#[test]
 fn deposit_with_insufficient_tokens_fails_and_leaves_storage_unchanged() {
     let env = Env::default();
     let s = setup(&env);

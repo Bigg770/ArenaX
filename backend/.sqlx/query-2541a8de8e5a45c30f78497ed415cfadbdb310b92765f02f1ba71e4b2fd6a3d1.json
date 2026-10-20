@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO api_key_usage_logs (\n                api_key_id, endpoint, method, client_ip, user_agent,\n                response_status, request_duration_ms, scopes_used\n            )\n            VALUES ($1, $2, $3, ($4::text)::inet, $5, $6, $7, $8)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2541a8de8e5a45c30f78497ed415cfadbdb310b92765f02f1ba71e4b2fd6a3d1"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE idempotency_keys SET used_at = NOW() WHERE key = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "34ecb41719fa05529f9ec8335e82bdf8f8b042c34f63f3fd54e439c5bea75330"
+}

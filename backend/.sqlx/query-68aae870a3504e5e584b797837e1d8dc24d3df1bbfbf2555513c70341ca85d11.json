@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE jobs\n                SET status = 'pending', error = $2, updated_at = NOW(), next_run_at = $3\n                WHERE id = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68aae870a3504e5e584b797837e1d8dc24d3df1bbfbf2555513c70341ca85d11"
+}

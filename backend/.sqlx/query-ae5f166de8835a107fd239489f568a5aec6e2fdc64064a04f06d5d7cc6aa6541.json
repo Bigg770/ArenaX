@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT COUNT(*) as count FROM tournament_matches\n                WHERE tournament_id = $1 AND (player1_id = $2 OR player2_id = $2)\n                AND winner_id IS NULL AND status = $3\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ae5f166de8835a107fd239489f568a5aec6e2fdc64064a04f06d5d7cc6aa6541"
+}

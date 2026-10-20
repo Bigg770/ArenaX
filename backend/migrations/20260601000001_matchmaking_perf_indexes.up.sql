@@ -1,6 +1,18 @@
 -- Migration: 20260601000001_matchmaking_perf_indexes
 -- Description: Add composite indexes to matchmaking_queue to fix high-latency
 --              queries that were doing full-table scans on (game, game_mode, status).
+--
+-- Query plans / cardinality assumptions (issue #92):
+--   * Matchmaker worker hot path filters (game, game_mode, status = 0) and
+--     orders by joined_at.  Assumes the waiting set is a small fraction of the
+--     table (<< 10%), so a partial index keeps it compact.
+--   * Average-wait-time aggregate filters (game, game_mode, status = 1,
+--     matched_at IS NOT NULL, joined_at >= ...).  Assumes matched rows are the
+--     dominant historical volume, so the partial predicate bounds the scan.
+--   * Target latency: matchmaker poll < 20ms p99; stats aggregate < 100ms p99
+--     on a seeded dataset of ~1M rows.
+--   * Write amplification: three narrow indexes on an append/update-heavy queue;
+--     acceptable given the read-heavy worker and stats paths.
 
 -- Composite index used by the background worker's active-game queries and by
 -- the stats handler.  Replaces the separate (status) and (game, game_mode)

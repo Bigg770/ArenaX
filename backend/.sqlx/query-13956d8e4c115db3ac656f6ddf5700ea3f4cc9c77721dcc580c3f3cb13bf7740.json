@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE match_authority\n                    SET state = 'STARTED'::match_authority_state,\n                        last_chain_tx = $1,\n                        started_at = NOW()\n                    WHERE id = $2\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "13956d8e4c115db3ac656f6ddf5700ea3f4cc9c77721dcc580c3f3cb13bf7740"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE users\n                SET \n                    skill_score = COALESCE(skill_score, 1000) + $1,\n                    fair_play_score = COALESCE(fair_play_score, 100) + $2,\n                    reputation_last_updated = NOW(),\n                    updated_at = NOW()\n                WHERE id = $3\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "602a3277a081156b6ebdbfd873196855dc790f1d9550bebf94efc09f78574aa7"
+}

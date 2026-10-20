@@ -1,139 +1,86 @@
-# Backend Database Migrations
+# Database Migrations
 
-The Rust backend uses SQLx migrations from `backend/migrations` as the source of truth for PostgreSQL schema changes.
+This document describes how schema migrations are authored, gated, and released
+alongside application deploys. It is the contract that makes rollout and
+rollback transactional: traffic is only shifted after migrations and readiness
+checks pass, and rollback restores the prior application artifact without
+reversing schema destructively.
 
-## Naming
+## Principles
 
-Every backend migration must be committed as a pair:
+1. **Migrations are backward compatible.** Every migration must be safe to run
+   while the previous application version is still serving traffic. Deploy the
+   schema change first, then the code that depends on it.
+2. **Expand / contract, never in one step.** Add new columns/tables/indexes in
+   one release (expand), migrate data, then remove the old shape in a later
+   release (contract) once no running version references it.
+3. **Rollback is application-only.** Rolling back restores the previous
+   application artifact (image/release identity). Schema is *not* reversed by
+   rollback; destructive down-migrations are not run automatically.
+4. **Migrations are gated.** A failed migration stops the deploy before any
+   traffic shift.
 
-```text
-YYYYMMDDHHMMSS_snake_case_description.up.sql
-YYYYMMDDHHMMSS_snake_case_description.down.sql
-```
+## Authoring rules
 
-Use one timestamp per logical schema change. Do not edit an already-applied migration; create a new migration instead.
+- Additive changes only in a single release: `ADD COLUMN` (nullable or with a
+  default), `CREATE TABLE`, `CREATE INDEX CONCURRENTLY`.
+- Never `DROP COLUMN`, `DROP TABLE`, or rename in the same release that stops
+  using them. Do the drop in a follow-up release after the old code is gone.
+- Never make a column `NOT NULL` without a default in the same release that
+  introduces it; backfill first, then tighten in a later release.
+- Keep each migration idempotent where the engine allows it, and small enough
+  to complete within the deploy gate timeout.
+- Down-migrations must be non-destructive: they may drop objects the same
+  release created, but must never drop or rewrite data that predates the
+  release.
 
-## Local Workflow
+## Deploy gate (rollout)
 
-Set `DATABASE_URL` to the target PostgreSQL database before running any command:
+The deploy workflow runs in this order and **stops before traffic shift** on any
+failure:
 
-```bash
-export DATABASE_URL=postgres://arenax:arenax@localhost:5432/arenax
-```
+1. **Artifact identity** — build and tag the release artifact; record the
+   release id (image digest / commit SHA) used for this rollout.
+2. **Migration gate** — run pending migrations. If any migration fails, abort
+   the deploy; no traffic is shifted and the previous version keeps serving.
+3. **Readiness gate** — start the new version and wait for health/readiness
+   checks. If readiness does not pass within the timeout, abort before traffic
+   shift and leave the previous version serving.
+4. **Traffic shift** — only after steps 1–3 succeed is traffic staged to the
+   new version.
 
-Create a migration:
+Operator output at each step must identify:
 
-```bash
-cd backend
-sqlx migrate add -r add_example_table
-```
+- the **release** being deployed (artifact id / commit),
+- the **migration state** (applied / pending / failed, with the failing
+  migration name),
+- the **gate decision** (proceed or stop) and, on stop, the reason.
 
-Validate naming and up/down pairs:
+## Rollback
 
-```bash
-cd backend
-./scripts/verify-migrations.sh
-```
+Rollback is triggered when a rollout fails after traffic shift or when a
+post-deploy check regresses.
 
-Apply pending migrations:
+1. **Restore the prior application artifact** by release id — redeploy the
+   previously recorded image digest / commit, not a rebuild.
+2. **Do not reverse schema destructively.** Because migrations are backward
+   compatible (expand/contract), the prior application version runs against the
+   current schema. No down-migration is executed automatically.
+3. **Readiness gate on rollback** — wait for the restored version to pass
+   health/readiness checks before shifting traffic back.
+4. **Operator output** must identify the release being restored, the current
+   migration state (schema is left as-is), and the rollback decision point
+   (why rollback was chosen and whether it succeeded).
 
-```bash
-cd backend
-./scripts/migrate.sh
-```
+If a schema change is genuinely incompatible and must be undone, that is a
+manual, reviewed operation — never an automatic rollback step.
 
-Check migration status:
+## Validation
 
-```bash
-cd backend
-./scripts/migration-status.sh
-```
+Exercise both failure paths in staging before relying on them in production:
 
-## Startup Enforcement
-
-The backend runs SQLx migrations during startup by default. Startup fails if:
-
-- the database cannot be reached,
-- a migration is dirty,
-- an applied migration is missing locally,
-- an applied migration checksum differs from the committed migration,
-- a pending migration fails.
-
-Set `BACKEND_MIGRATION_MODE=disabled` only for controlled maintenance tasks where migrations are applied by a separate deployment step.
-
-## CI/CD
-
-CI validates backend migration filenames and up/down pairs, then applies all migrations to a clean PostgreSQL service using SQLx. Deployment pipelines should run the same migration command before starting new backend instances:
-
-```bash
-cd backend
-./scripts/migrate.sh
-```
-
-Because application startup also validates migrations, schema drift blocks the backend from serving traffic.
-
-## Rollback Verification (up -> down -> up)
-
-Every down migration is proven to work, not assumed. CI runs the full cycle against a disposable database after applying all migrations:
-
-```bash
-cd backend
-SKIP_BACKUP=1 ./scripts/rollback-verify.sh
-```
-
-The script performs, in order:
-
-1. **Pre-migration backup** (unless `SKIP_BACKUP=1` — acceptable only on disposable databases)
-2. **Snapshot** — records the head migration and public table count
-3. **DOWN** — `sqlx migrate revert` runs the latest `.down.sql`; verifies the migration is no longer recorded as applied
-4. **Health check** — database reachable, no dirty migrations, optional backend `/api/health` probe (`BACKEND_HEALTH_URL`)
-5. **UP** — `sqlx migrate run` re-applies the migration
-6. **Health check** — head migration restored, table count matches the snapshot exactly
-
-A `.down.sql` that drops something its `.up.sql` does not recreate — or that fails silently — fails this cycle. That failure blocks CI.
-
-## Rollback And Backups
-
-For shared, staging, or production databases, create a backup before reverting migrations:
-
-```bash
-cd backend
-./scripts/backup-database.sh
-```
-
-The backup script writes a custom-format `pg_dump` file into `backend/backups`, which is git-ignored.
-
-To revert the latest migration:
-
-```bash
-cd backend
-./scripts/rollback-last-migration.sh
-```
-
-Rollback is intentionally interactive. For production incidents, prefer restoring from a verified backup when data-destructive down migrations are involved.
-
-## Disaster Recovery Procedure (migration rollback)
-
-When a migration must be rolled back on shared, staging, or production data, run the full sequence — never a bare `sqlx migrate revert`:
-
-```bash
-cd backend
-
-# 1. PRE-MIGRATION BACKUP — mandatory on any data you care about
-./scripts/backup-database.sh
-
-# 2. ROLLBACK WITH VERIFICATION — backup -> down -> health -> up -> health
-#    (cycles the latest migration; set BACKEND_HEALTH_URL when the backend is live)
-./scripts/rollback-verify.sh
-
-# 3. IF THE DOWN ITSELF FAILED — restore from the backup taken in step 1:
-#    DATABASE_URL=<target> ./scripts/restore-database.sh backups/<the-new-dump>.dump
-```
-
-The recovery chain is: `backup-database.sh` (point-in-time copy) -> `rollback-verify.sh` (verified down/up cycle with health checks) -> `restore-database.sh` (fallback if the down is data-destructive and the cycle cannot complete). `verify-backup.sh` proves any dump restorable before you trust it. Full backup RTO/RPO targets and point-in-time recovery live in [scripts/BACKUP_RECOVERY.md](scripts/BACKUP_RECOVERY.md).
-
-Post-migration health checks: `migrate.sh` now verifies after every apply that the database is reachable and no migration is recorded dirty; `rollback-verify.sh` extends this to the down and re-apply legs, with an optional live-backend probe via `BACKEND_HEALTH_URL`.
-
-## Other Components
-
-Server Prisma migrations remain under `server/prisma/migrations` and should not be mixed into `backend/migrations`. Soroban contract storage changes must be documented with the contract change and coordinated with backend migrations when the backend depends on indexed contract data.
+- **Failed health check:** deploy a version whose readiness check fails and
+  confirm traffic is never shifted and the previous version keeps serving.
+- **Rollback path:** deploy a bad release, trigger rollback, and confirm the
+  prior artifact is restored, readiness passes, and no destructive schema
+  reversal occurred.

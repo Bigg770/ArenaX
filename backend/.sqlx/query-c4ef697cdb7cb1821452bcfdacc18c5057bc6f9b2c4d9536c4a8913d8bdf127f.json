@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM matches WHERE player1_id::text LIKE 'test-%'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "c4ef697cdb7cb1821452bcfdacc18c5057bc6f9b2c4d9536c4a8913d8bdf127f"
+}

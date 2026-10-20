@@ -160,16 +160,27 @@ impl CrossGameAssets {
 
     pub fn register_game(env: Env, game_id: u32, game_contract: Address) {
         Self::require_admin(&env);
+        if game_id >= 64 {
+            panic!("game id out of range");
+        }
         env.storage()
             .instance()
             .set(&DataKey::AuthorisedGame(game_id), &game_contract);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("GAME_REG"), game_id),
+            game_contract,
+        );
     }
 
+    /// Revoke mint authority. Existing balances remain owned; asset compatibility
+    /// is controlled separately through `update_compatible_games`.
     pub fn revoke_game(env: Env, game_id: u32) {
         Self::require_admin(&env);
         env.storage()
             .instance()
             .remove(&DataKey::AuthorisedGame(game_id));
+        env.events()
+            .publish((soroban_sdk::symbol_short!("GAMEREVOK"), game_id), ());
     }
 
     /// Register a new cross-game asset type.
@@ -230,11 +241,10 @@ impl CrossGameAssets {
             panic!("asset already registered");
         }
 
-        let compatible_games = if game_id < 64 {
-            1u64 << game_id
-        } else {
-            u64::MAX
-        };
+        if game_id >= 64 {
+            panic!("game id out of range");
+        }
+        let compatible_games = 1u64 << game_id;
         let def = AssetDefinition {
             asset_id: asset_id.clone(),
             kind: asset_type,
@@ -267,10 +277,15 @@ impl CrossGameAssets {
             .persistent()
             .get(&DataKey::AssetDef(asset_id.clone()))
             .expect("asset not found");
+        let previous_compatible_games = def.compatible_games;
         def.compatible_games = compatible_games;
         env.storage()
             .persistent()
-            .set(&DataKey::AssetDef(asset_id), &def);
+            .set(&DataKey::AssetDef(asset_id.clone()), &def);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("COMP_UPD"), asset_id),
+            (previous_compatible_games, compatible_games),
+        );
     }
 
     pub fn sync_asset_metadata(env: Env, asset_id: BytesN<32>, game_id: u32, metadata: String) {
@@ -302,6 +317,7 @@ impl CrossGameAssets {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        Self::require_no_pending_bridge(&env, &to, &asset_id);
 
         let mut def: AssetDefinition = env
             .storage()
@@ -315,7 +331,7 @@ impl CrossGameAssets {
         }
 
         // Check game compatibility
-        if source_game_id < 64 && (def.compatible_games & (1u64 << source_game_id)) == 0 {
+        if !Self::is_game_compatible(env.clone(), asset_id.clone(), source_game_id) {
             panic!("game not compatible with asset");
         }
 
@@ -343,6 +359,9 @@ impl CrossGameAssets {
         let bal_key = DataKey::Balance(to.clone(), asset_id.clone());
         let existing: Option<AssetBalance> = env.storage().persistent().get(&bal_key);
         let balance = if let Some(mut b) = existing {
+            if b.source_game_id != source_game_id {
+                panic!("source game mismatch");
+            }
             b.amount += amount;
             b
         } else {
@@ -384,6 +403,8 @@ impl CrossGameAssets {
         if from == to {
             panic!("cannot transfer to self");
         }
+        Self::require_no_pending_bridge(&env, &from, &asset_id);
+        Self::require_no_pending_bridge(&env, &to, &asset_id);
 
         let def: AssetDefinition = env
             .storage()
@@ -395,8 +416,12 @@ impl CrossGameAssets {
             panic!("asset not transferable");
         }
 
-        // Validate destination game compatibility
-        if to_game_id < 64 && (def.compatible_games & (1u64 << to_game_id)) == 0 {
+        // The source game must match the balance's recorded game context, and
+        // both game IDs must be representable by the configured compatibility mask.
+        if !Self::is_game_compatible(env.clone(), asset_id.clone(), from_game_id) {
+            panic!("source game not compatible");
+        }
+        if !Self::is_game_compatible(env.clone(), asset_id.clone(), to_game_id) {
             panic!("destination game not compatible");
         }
 
@@ -406,6 +431,9 @@ impl CrossGameAssets {
             .persistent()
             .get(&from_key)
             .expect("insufficient balance");
+        if from_bal.source_game_id != from_game_id {
+            panic!("source game mismatch");
+        }
         if from_bal.amount < amount {
             panic!("insufficient balance");
         }
@@ -422,7 +450,10 @@ impl CrossGameAssets {
             .persistent()
             .get::<DataKey, AssetBalance>(&to_key)
         {
-            b.amount += amount;
+            if b.source_game_id != to_game_id {
+                panic!("destination game mismatch");
+            }
+            b.amount = b.amount.checked_add(amount).expect("balance overflow");
             b
         } else {
             AssetBalance {
@@ -431,7 +462,7 @@ impl CrossGameAssets {
                 amount,
                 nft_serial: None,
                 acquired_at: env.ledger().timestamp(),
-                source_game_id: from_game_id,
+                source_game_id: to_game_id,
             }
         };
         env.storage().persistent().set(&to_key, &to_bal);
@@ -453,6 +484,10 @@ impl CrossGameAssets {
     ) {
         Self::require_not_paused(&env);
         owner.require_auth();
+        Self::require_no_pending_bridge(&env, &owner, &asset_id);
+        if !Self::validate_asset_compatibility(env.clone(), asset_id.clone(), from_game) {
+            panic!("source game not compatible");
+        }
         if !Self::validate_asset_compatibility(env.clone(), asset_id.clone(), to_game) {
             panic!("target game not compatible");
         }
@@ -477,6 +512,7 @@ impl CrossGameAssets {
     pub fn burn(env: Env, owner: Address, asset_id: BytesN<32>, amount: i128) {
         Self::require_not_paused(&env);
         owner.require_auth();
+        Self::require_no_pending_bridge(&env, &owner, &asset_id);
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -522,6 +558,14 @@ impl CrossGameAssets {
     ) {
         if !Self::validate_asset_compatibility(env.clone(), asset_id.clone(), game_id) {
             panic!("game not compatible");
+        }
+        let balance: AssetBalance = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(owner.clone(), asset_id.clone()))
+            .expect("no balance");
+        if balance.source_game_id != game_id {
+            panic!("source game mismatch");
         }
         Self::burn(env, owner, asset_id, amount);
     }
@@ -609,6 +653,13 @@ impl CrossGameAssets {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        if !Self::is_game_compatible(env.clone(), asset_id.clone(), source_game_id) {
+            panic!("source game not compatible");
+        }
+        if !Self::is_game_compatible(env.clone(), asset_id.clone(), target_game_id) {
+            panic!("target game not compatible");
+        }
+        Self::require_no_pending_bridge(&env, &owner, &asset_id);
 
         // Verify asset is transferable
         let def: AssetDefinition = env
@@ -650,6 +701,9 @@ impl CrossGameAssets {
             .persistent()
             .get(&bal_key)
             .expect("insufficient balance");
+        if bal.source_game_id != source_game_id {
+            panic!("source game mismatch");
+        }
         if bal.amount < amount {
             panic!("insufficient balance");
         }
@@ -769,7 +823,13 @@ impl CrossGameAssets {
         let bal_key = DataKey::Balance(request.owner.clone(), request.asset_id.clone());
         let existing: Option<AssetBalance> = env.storage().persistent().get(&bal_key);
         let balance = if let Some(mut b) = existing {
-            b.amount += request.amount;
+            if b.source_game_id != request.source_game_id {
+                panic!("bridge refund game mismatch");
+            }
+            b.amount = b
+                .amount
+                .checked_add(request.amount)
+                .expect("balance overflow");
             b
         } else {
             AssetBalance {
@@ -821,7 +881,13 @@ impl CrossGameAssets {
         let bal_key = DataKey::Balance(owner.clone(), request.asset_id.clone());
         let existing: Option<AssetBalance> = env.storage().persistent().get(&bal_key);
         let balance = if let Some(mut b) = existing {
-            b.amount += request.amount;
+            if b.source_game_id != request.source_game_id {
+                panic!("bridge refund game mismatch");
+            }
+            b.amount = b
+                .amount
+                .checked_add(request.amount)
+                .expect("balance overflow");
             b
         } else {
             AssetBalance {
@@ -903,7 +969,7 @@ impl CrossGameAssets {
         env.storage()
             .persistent()
             .get::<DataKey, AssetDefinition>(&DataKey::AssetDef(asset_id))
-            .map(|d| game_id >= 64 || (d.compatible_games & (1u64 << game_id)) != 0)
+            .map(|d| game_id < 64 && (d.compatible_games & (1u64 << game_id)) != 0)
             .unwrap_or(false)
     }
 
@@ -967,6 +1033,16 @@ impl CrossGameAssets {
         }
     }
 
+    fn require_no_pending_bridge(env: &Env, owner: &Address, asset_id: &BytesN<32>) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::BridgeLock(owner.clone(), asset_id.clone()))
+        {
+            panic!("asset has a pending bridge request");
+        }
+    }
+
     fn require_authorised_caller(env: &Env, caller: &Address, game_id: u32) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller == &admin {
@@ -1009,3 +1085,6 @@ impl CrossGameAssets {
         BytesN::from_array(env, &bytes)
     }
 }
+
+    #[cfg(test)]
+    mod test;

@@ -59,10 +59,12 @@ pub enum ConflictType {
 pub struct IdempotencyPolicy {
     /// Apply idempotency to ALL POST and PUT methods globally
     pub enabled: bool,
+    pub enabled_routes: Vec<String>,
     /// Header name for the idempotency key (default: "Idempotency-Key")
     pub key_header_name: String,
     /// TTL in seconds for cached responses (default: 86400 = 24 hours)
     pub ttl_seconds: u64,
+    pub default_ttl_seconds: i32,
     /// Max response body size in KB to cache (default: 1024 = 1MB)
     pub max_response_size_kb: u32,
     /// Status code returned on idempotency key conflict (default: 422)
@@ -73,8 +75,17 @@ impl Default for IdempotencyPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
+            enabled_routes: vec![
+                "/api/payments/create".to_string(),
+                "/api/payments/refund".to_string(),
+                "/api/wallets/deposit".to_string(),
+                "/api/wallets/withdraw".to_string(),
+                "/api/tournaments/join".to_string(),
+                "/api/matchmaking/join".to_string(),
+            ],
             key_header_name: "Idempotency-Key".to_string(),
             ttl_seconds: 86400, // 24 hours
+            default_ttl_seconds: 86400,
             max_response_size_kb: 1024, // 1MB
             conflict_status_code: 422,
         }

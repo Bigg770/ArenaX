@@ -7,11 +7,16 @@
 //! - Track anti-cheat flags and penalties
 
 use crate::config::Config;
-use crate::models::User;
 use sqlx::{PgPool, Row};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
+
+const REPUTATION_SCORING_VERSION: i32 = 1;
+const MIN_REPUTATION_SCORE: i64 = 0;
+const MAX_SKILL_SCORE: i64 = 3_000;
+const MAX_FAIR_PLAY_SCORE: i64 = 100;
 
 #[derive(Error, Debug)]
 pub enum ReputationError {
@@ -33,6 +38,7 @@ pub struct PlayerReputation {
     pub user_id: uuid::Uuid,
     pub skill_score: i32,
     pub fair_play_score: i32,
+    pub scoring_version: i32,
     pub last_update_ts: u64,
     pub is_bad_actor: bool,
 }
@@ -87,8 +93,9 @@ impl ReputationService {
                 id as user_id,
                 COALESCE(skill_score, 1000) as skill_score,
                 COALESCE(fair_play_score, 100) as fair_play_score,
+                reputation_scoring_version as scoring_version,
                 reputation_last_updated,
-                COALESCE(is_bad_actor, false) as is_bad_actor
+                COALESCE(is_bad_actor, false) as "is_bad_actor!"
             FROM users
             WHERE id = $1
             "#,
@@ -103,6 +110,7 @@ impl ReputationService {
             user_id: record.user_id,
             skill_score: record.skill_score,
             fair_play_score: record.fair_play_score,
+            scoring_version: record.scoring_version,
             last_update_ts: record
                 .reputation_last_updated
                 .map(|t| t.timestamp() as u64)
@@ -144,44 +152,143 @@ impl ReputationService {
         Ok(reputation)
     }
 
-    /// Batch update reputation after match completion
-    pub async fn update_reputation_on_match(
+    /// Apply reputation once after the on-chain match authority is finalized.
+    pub async fn update_reputation_on_finalized_match(
         &self,
         match_id: uuid::Uuid,
-        players: &[uuid::Uuid],
-        skill_deltas: &[i32],
     ) -> Result<(), ReputationError> {
-        if players.len() != skill_deltas.len() {
-            return Err(ReputationError::InvalidData(
-                "Players and skill deltas length mismatch".to_string(),
-            ));
-        }
-
         let mut tx = self
             .db_pool
             .begin()
             .await
             .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
 
-        for (i, &player_id) in players.iter().enumerate() {
-            let skill_delta = skill_deltas[i];
+        let match_record = sqlx::query(
+            "SELECT state::text AS state, player_a, player_b, winner \
+             FROM match_authority WHERE id = $1 FOR UPDATE",
+        )
+        .bind(match_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ReputationError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| ReputationError::InvalidData("Match not found".to_string()))?;
+        let state: String = match_record
+            .try_get("state")
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let player_a: String = match_record
+            .try_get("player_a")
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let player_b: String = match_record
+            .try_get("player_b")
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let winner: Option<String> = match_record
+            .try_get("winner")
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        if state != "FINALIZED" {
+            return Err(ReputationError::InvalidData(
+                "Match must be finalized before reputation is updated".to_string(),
+            ));
+        }
+        if player_a == player_b || ![player_a.as_str(), player_b.as_str()].contains(&winner.as_deref().unwrap_or("")) {
+            return Err(ReputationError::InvalidData(
+                "Finalized match must have two distinct participants and a participant winner".to_string(),
+            ));
+        }
+
+        let mut participant_addresses = vec![player_a.clone(), player_b.clone()];
+        participant_addresses.sort_unstable();
+        let accounts = sqlx::query(
+            "SELECT public_key, user_id FROM stellar_accounts \
+             WHERE public_key = ANY($1) AND user_id IS NOT NULL",
+        )
+        .bind(&participant_addresses)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let mut participant_ids = HashMap::new();
+        for account in accounts {
+            let public_key: String = account
+                .try_get("public_key")
+                .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+            let user_id: uuid::Uuid = account
+                .try_get("user_id")
+                .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+            participant_ids.insert(public_key, user_id);
+        }
+        if participant_ids.len() != 2
+            || participant_ids.values().collect::<HashSet<_>>().len() != 2
+        {
+            return Err(ReputationError::InvalidData(
+                "Finalized match participants must map to registered users".to_string(),
+            ));
+        }
+
+        for participant_address in participant_addresses {
+            let player_id = *participant_ids
+                .get(&participant_address)
+                .ok_or_else(|| ReputationError::InvalidData("Match participant not found".to_string()))?;
+            let skill_delta = if winner.as_deref() == Some(participant_address.as_str()) {
+                25
+            } else {
+                -25
+            };
             let fair_play_delta = 1; // Completion bonus
 
-            // Update user reputation
-            sqlx::query!(
-                r#"
-                UPDATE users
-                SET 
-                    skill_score = COALESCE(skill_score, 1000) + $1,
-                    fair_play_score = COALESCE(fair_play_score, 100) + $2,
-                    reputation_last_updated = NOW(),
-                    updated_at = NOW()
-                WHERE id = $3
-                "#,
-                skill_delta,
-                fair_play_delta,
-                player_id
+            let newly_applied = sqlx::query(
+                "INSERT INTO reputation_match_applications (match_id, user_id, scoring_version) \
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING match_id",
             )
+            .bind(match_id)
+            .bind(player_id)
+            .bind(REPUTATION_SCORING_VERSION)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?
+            .is_some();
+
+            if !newly_applied {
+                continue;
+            }
+
+            let current = sqlx::query(
+                "SELECT COALESCE(skill_score, 1000)::bigint AS skill_score, \
+                 COALESCE(fair_play_score, 100)::bigint AS fair_play_score \
+                 FROM users WHERE id = $1 FOR UPDATE",
+            )
+            .bind(player_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?
+            .ok_or_else(|| ReputationError::InvalidData("Match participant not found".to_string()))?;
+            let previous_skill: i64 = current
+                .try_get("skill_score")
+                .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+            let previous_fair_play: i64 = current
+                .try_get("fair_play_score")
+                .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+            let previous_skill = previous_skill.clamp(MIN_REPUTATION_SCORE, MAX_SKILL_SCORE);
+            let previous_fair_play =
+                previous_fair_play.clamp(MIN_REPUTATION_SCORE, MAX_FAIR_PLAY_SCORE);
+            let next_skill = previous_skill
+                .checked_add(i64::from(skill_delta))
+                .ok_or_else(|| ReputationError::InvalidData("Skill score overflow".to_string()))?
+                .clamp(MIN_REPUTATION_SCORE, MAX_SKILL_SCORE);
+            let next_fair_play = previous_fair_play
+                .checked_add(i64::from(fair_play_delta))
+                .ok_or_else(|| ReputationError::InvalidData("Fair-play score overflow".to_string()))?
+                .clamp(MIN_REPUTATION_SCORE, MAX_FAIR_PLAY_SCORE);
+            let applied_skill_delta = (next_skill - previous_skill) as i32;
+            let applied_fair_play_delta = (next_fair_play - previous_fair_play) as i32;
+
+            sqlx::query(
+                "UPDATE users SET skill_score = $1, fair_play_score = $2, \
+                 reputation_scoring_version = $3, reputation_last_updated = NOW(), \
+                 updated_at = NOW() WHERE id = $4",
+            )
+            .bind(next_skill as i32)
+            .bind(next_fair_play as i32)
+            .bind(REPUTATION_SCORING_VERSION)
+            .bind(player_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
@@ -190,14 +297,16 @@ impl ReputationService {
             sqlx::query!(
                 r#"
                 INSERT INTO reputation_events (
-                    user_id, event_type, skill_delta, fair_play_delta, match_id
-                ) VALUES ($1, $2, $3, $4, $5)
+                    user_id, event_type, skill_delta, fair_play_delta,
+                    match_authority_id, scoring_version
+                ) VALUES ($1, $2, $3, $4, $5, $6)
                 "#,
                 player_id,
                 "match_completion",
-                skill_delta,
-                fair_play_delta,
-                match_id
+                applied_skill_delta,
+                applied_fair_play_delta,
+                match_id,
+                REPUTATION_SCORING_VERSION
             )
             .execute(&mut *tx)
             .await
@@ -212,7 +321,7 @@ impl ReputationService {
             .await
             .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
 
-            if rep.fair_play_score < 30 {
+            if rep.fair_play_score.unwrap_or(100) < 30 {
                 sqlx::query!(
                     r#"UPDATE users SET is_bad_actor = true WHERE id = $1"#,
                     player_id
@@ -231,7 +340,7 @@ impl ReputationService {
 
         info!(
             "Updated reputation for {} players in match {}",
-            players.len(),
+            participant_ids.len(),
             match_id
         );
 
@@ -246,50 +355,71 @@ impl ReputationService {
         penalty: i32,
         transaction_hash: Option<String>,
     ) -> Result<(), ReputationError> {
+        if penalty <= 0 {
+            return Err(ReputationError::InvalidData(
+                "Penalty must be positive".to_string(),
+            ));
+        }
         let mut tx = self
             .db_pool
             .begin()
             .await
             .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
 
+        let previous_fair_play: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(fair_play_score, 100)::bigint FROM users WHERE id = $1 FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ReputationError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| ReputationError::InvalidData("User not found".to_string()))?;
+
         // Apply penalty to fair_play score (capped at 0)
         let result = sqlx::query!(
             r#"
             UPDATE users
             SET 
-                fair_play_score = GREATEST(0, COALESCE(fair_play_score, 100) - $1),
-                anticheat_flags_count = COALESCE(anticheat_flags_count, 0) + 1,
+                fair_play_score = LEAST($2::bigint, GREATEST($3::bigint, COALESCE(fair_play_score, 100)::bigint - $1::bigint))::integer,
+                anticheat_flags_count = LEAST(2147483647::bigint, COALESCE(anticheat_flags_count, 0)::bigint + 1)::integer,
+                reputation_scoring_version = $5,
                 reputation_last_updated = NOW(),
                 updated_at = NOW(),
                 is_bad_actor = CASE 
-                    WHEN COALESCE(fair_play_score, 100) - $1 < 30 THEN true
+                    WHEN COALESCE(fair_play_score, 100)::bigint - $1::bigint < 30 THEN true
                     ELSE is_bad_actor
                 END
-            WHERE id = $2
+            WHERE id = $4
             RETURNING fair_play_score
             "#,
             penalty,
-            user_id
+            MAX_FAIR_PLAY_SCORE,
+            MIN_REPUTATION_SCORE,
+            user_id,
+            REPUTATION_SCORING_VERSION
         )
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let previous_fair_play = previous_fair_play.clamp(MIN_REPUTATION_SCORE, MAX_FAIR_PLAY_SCORE);
+        let applied_delta = i64::from(result.fair_play_score.unwrap_or(0)) - previous_fair_play;
 
         // Record penalty event
         sqlx::query!(
             r#"
             INSERT INTO reputation_events (
                 user_id, event_type, skill_delta, fair_play_delta, match_id, 
-                transaction_hash, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                transaction_hash, metadata, scoring_version
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
             user_id,
             "anticheat_penalty",
             0,
-            -penalty,
+            applied_delta as i32,
             match_id,
             transaction_hash,
-            serde_json::json!({"penalty": penalty}).to_string()
+            serde_json::json!({"requested_penalty": penalty}).to_string(),
+            REPUTATION_SCORING_VERSION
         )
         .execute(&mut *tx)
         .await
@@ -354,22 +484,71 @@ impl ReputationService {
 
     /// Apply time-based decay to player reputation (periodic maintenance)
     pub async fn apply_decay(&self, user_id: uuid::Uuid, decay_amount: i32) -> Result<(), ReputationError> {
-        sqlx::query!(
-            r#"
-            UPDATE users
-            SET 
-                skill_score = GREATEST(0, COALESCE(skill_score, 1000) - $1),
-                fair_play_score = GREATEST(0, COALESCE(fair_play_score, 100) - $1),
-                reputation_last_updated = NOW(),
-                updated_at = NOW()
-            WHERE id = $2
-            "#,
-            decay_amount,
-            user_id
+        if decay_amount < 0 {
+            return Err(ReputationError::InvalidData(
+                "Decay amount cannot be negative".to_string(),
+            ));
+        }
+
+        let mut tx = self
+            .db_pool
+            .begin()
+            .await
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let previous = sqlx::query(
+            "SELECT COALESCE(skill_score, 1000)::bigint AS skill_score, \
+             COALESCE(fair_play_score, 100)::bigint AS fair_play_score \
+             FROM users WHERE id = $1 FOR UPDATE",
         )
-        .execute(&self.db_pool)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ReputationError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| ReputationError::InvalidData("User not found".to_string()))?;
+        let previous_skill: i64 = previous
+            .try_get("skill_score")
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let previous_fair_play: i64 = previous
+            .try_get("fair_play_score")
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+        let previous_skill = previous_skill.clamp(MIN_REPUTATION_SCORE, MAX_SKILL_SCORE);
+        let previous_fair_play =
+            previous_fair_play.clamp(MIN_REPUTATION_SCORE, MAX_FAIR_PLAY_SCORE);
+        let next_skill = (previous_skill - i64::from(decay_amount))
+            .clamp(MIN_REPUTATION_SCORE, MAX_SKILL_SCORE);
+        let next_fair_play = (previous_fair_play - i64::from(decay_amount))
+            .clamp(MIN_REPUTATION_SCORE, MAX_FAIR_PLAY_SCORE);
+        let skill_delta = (next_skill - previous_skill) as i32;
+        let fair_play_delta = (next_fair_play - previous_fair_play) as i32;
+
+        sqlx::query(
+            "UPDATE users SET skill_score = $1, fair_play_score = $2, \
+             reputation_scoring_version = $3, reputation_last_updated = NOW(), \
+             updated_at = NOW() WHERE id = $4",
+        )
+        .bind(next_skill as i32)
+        .bind(next_fair_play as i32)
+        .bind(REPUTATION_SCORING_VERSION)
+        .bind(user_id)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+
+        sqlx::query(
+            "INSERT INTO reputation_events (user_id, event_type, skill_delta, fair_play_delta, scoring_version) \
+             VALUES ($1, 'decay', $2, $3, $4)",
+        )
+        .bind(user_id)
+        .bind(skill_delta)
+        .bind(fair_play_delta)
+        .bind(REPUTATION_SCORING_VERSION)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ReputationError::DatabaseError(e.to_string()))?;
 
         debug!("Applied decay {} to user {}", decay_amount, user_id);
 
@@ -398,8 +577,8 @@ impl ReputationService {
             bad_actors_count: stats.bad_actors_count.unwrap_or(0) as i64,
             low_fair_play_count: stats.low_fair_play_count.unwrap_or(0) as i64,
             high_skill_count: stats.high_skill_count.unwrap_or(0) as i64,
-            avg_skill: stats.avg_skill.unwrap_or(1000.0),
-            avg_fair_play: stats.avg_fair_play.unwrap_or(100.0),
+            avg_skill: stats.avg_skill.and_then(|d| d.to_f64()).unwrap_or(1000.0),
+            avg_fair_play: stats.avg_fair_play.and_then(|d| d.to_f64()).unwrap_or(100.0),
         })
     }
 }

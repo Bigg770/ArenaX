@@ -3,7 +3,9 @@ mod tests {
     use super::*;
     use crate::db::DbPool;
     use crate::models::idempotency::*;
-    use actix_web::{test, web, App, HttpRequest};
+    use crate::middleware::idempotency_middleware::IdempotencyMiddleware;
+    use crate::service::idempotency_service::{IdempotencyKeyResponse, IdempotencyService};
+    use actix_web::{test, web, App, HttpMessage, HttpRequest};
     use chrono::Utc;
     use serde_json::json;
     use sqlx;
@@ -40,9 +42,23 @@ mod tests {
         pool
     }
 
-    async fn cleanup_test_data(pool: &DbPool) {
+    trait AsPool {
+        fn as_pool(&self) -> &DbPool;
+    }
+    impl AsPool for DbPool {
+        fn as_pool(&self) -> &DbPool {
+            self
+        }
+    }
+    impl AsPool for Option<DbPool> {
+        fn as_pool(&self) -> &DbPool {
+            self.as_ref().unwrap()
+        }
+    }
+
+    async fn cleanup_test_data(pool: &impl AsPool) {
         sqlx::query!("DELETE FROM idempotency_keys")
-            .execute(pool)
+            .execute(pool.as_pool())
             .await
             .ok();
     }
@@ -54,7 +70,7 @@ mod tests {
         
         let key = "test_key_123".to_string();
         let hash = "abc123".to_string();
-        let response = CachedResponse::new(200, json!({}), json!({ "test": "data" }));
+        let response = CachedResponse::new(hash.clone(), 200, json!({}), json!({ "test": "data" }));
         
         let result = service.store_key(key.clone(), hash, response).await;
         assert!(result.is_ok());
@@ -76,8 +92,8 @@ mod tests {
         let new_hash = "hash2".to_string();
         
         // Store original key
-        let response = CachedResponse::new(200, json!({}), json!({}));
-        service.store_key(key.clone(), original_hash, response).await.unwrap();
+        let response = CachedResponse::new(original_hash.clone(), 200, json!({}), json!({}));
+        service.store_key(key.clone(), original_hash.clone(), response).await.unwrap();
         
         // Check for conflict
         let conflict = service.check_conflict(&key, &new_hash).await.unwrap();
@@ -101,7 +117,7 @@ mod tests {
         let hash = "same_hash".to_string();
         
         // Store original key
-        let response = CachedResponse::new(200, json!({}), json!({}));
+        let response = CachedResponse::new(hash.clone(), 200, json!({}), json!({}));
         service.store_key(key.clone(), hash.clone(), response).await.unwrap();
         
         // Check for conflict with same hash
@@ -118,7 +134,7 @@ mod tests {
         
         // Create expired key
         let key = "expired_key".to_string();
-        let response = CachedResponse::new(200, json!({}), json!({}));
+        let response = CachedResponse::new("hash".to_string(), 200, json!({}), json!({}));
         
         sqlx::query!(
             "INSERT INTO idempotency_keys (key, request_hash, response_status, response_headers, response_body, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW() - INTERVAL '1 hour')",
@@ -147,7 +163,7 @@ mod tests {
         // Create some test data
         for i in 0..5 {
             let key = format!("stats_key_{}", i);
-            let response = CachedResponse::new(200, json!({}), json!({}));
+            let response = CachedResponse::new(format!("hash_{}", i), 200, json!({}), json!({}));
             service.store_key(key, format!("hash_{}", i), response).await.unwrap();
         }
         
@@ -165,11 +181,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_response_size_calculation() {
-        let small_response = CachedResponse::new(200, json!({}), json!({ "small": "data" }));
+        let small_response = CachedResponse::new("hash".to_string(), 200, json!({}), json!({ "small": "data" }));
         assert!(small_response.size_kb() < 1);
         
         let large_data = "x".repeat(2048); // 2KB
-        let large_response = CachedResponse::new(200, json!({}), json!({ "data": large_data }));
+        let large_response = CachedResponse::new("hash".to_string(), 200, json!({}), json!({ "data": large_data }));
         assert!(large_response.size_kb() >= 2);
     }
 
@@ -232,10 +248,10 @@ mod tests {
         // Create test request
         let req = test::TestRequest::post()
             .uri("/api/test?param=value")
-            .header("Content-Type", "application/json")
-            .header("Idempotency-Key", "test_key")
+            .insert_header(("Content-Type", "application/json"))
+            .insert_header(("Idempotency-Key", "test_key"))
             .set_json(json!({"data": "test"}))
-            .to_request();
+            .to_http_request();
         
         let body = br#"{"data": "test"}"#;
         let hash = middleware.generate_request_hash(&req, body);
@@ -258,22 +274,22 @@ mod tests {
         
         // Valid key
         let req = test::TestRequest::default()
-            .header("Idempotency-Key", "valid_key_123")
-            .to_request();
+            .insert_header(("Idempotency-Key", "valid_key_123"))
+            .to_http_request();
         
-        let key = middleware.extract_idempotency_key(req.headers()).unwrap();
+        let key = middleware.extract_idempotency_key_from_headers(req.headers()).unwrap();
         assert_eq!(key, "valid_key_123");
         
         // Missing key
-        let req_no_key = test::TestRequest::default().to_request();
-        assert!(middleware.extract_idempotency_key(req_no_key.headers()).is_err());
+        let req_no_key = test::TestRequest::default().to_http_request();
+        assert!(middleware.extract_idempotency_key_from_headers(req_no_key.headers()).is_err());
         
         // Empty key
         let req_empty = test::TestRequest::default()
-            .header("Idempotency-Key", "")
-            .to_request();
+            .insert_header(("Idempotency-Key", ""))
+            .to_http_request();
         
-        assert!(middleware.extract_idempotency_key(req_empty.headers()).is_err());
+        assert!(middleware.extract_idempotency_key_from_headers(req_empty.headers()).is_err());
         
         cleanup_test_data(&middleware.db_pool).await;
     }
@@ -316,8 +332,8 @@ mod tests {
         let middleware = IdempotencyMiddleware::default(setup_test_db().await);
         let req = test::TestRequest::post()
             .uri("/api/test")
-            .header("Content-Type", "application/json")
-            .to_request();
+            .insert_header(("Content-Type", "application/json"))
+            .to_http_request();
         
         let body = br#"{"large": "data", "numbers": [1,2,3,4,5,6,7,8,9,10]}"#;
         
@@ -348,7 +364,7 @@ mod tests {
             let service_clone = service.clone();
             let handle = tokio::spawn(async move {
                 let key = format!("concurrent_key_{}", i);
-                let response = CachedResponse::new(200, json!({}), json!({}));
+                let response = CachedResponse::new(format!("hash_{}", i), 200, json!({}), json!({}));
                 service_clone.store_key(key, format!("hash_{}", i), response).await
             });
             handles.push(handle);
@@ -376,7 +392,7 @@ mod tests {
         let service = IdempotencyService::new(pool, policy);
         
         let large_data = "x".repeat(2048); // 2KB
-        let large_response = CachedResponse::new(200, json!({}), json!({ "data": large_data }));
+        let large_response = CachedResponse::new("hash".to_string(), 200, json!({}), json!({ "data": large_data }));
         
         let result = service.store_key("test_key".to_string(), "hash".to_string(), large_response).await;
         assert!(result.is_err());
@@ -387,9 +403,8 @@ mod tests {
     #[tokio::test]
     async fn test_database_error_handling() {
         // Use invalid database URL to simulate database errors
-        let invalid_pool = sqlx::PgPool::connect("postgresql://invalid:invalid@localhost/invalid")
-            .await
-            .expect_err("Should fail to connect to invalid database");
+        let invalid_pool = sqlx::PgPool::connect_lazy("postgresql://invalid:invalid@localhost:5433/invalid")
+            .expect("connect_lazy should construct pool");
         
         let service = IdempotencyService::default(invalid_pool);
         
@@ -397,7 +412,7 @@ mod tests {
         let result = service.get_cached_response("test_key").await;
         assert!(result.is_err());
         
-        let result = service.store_key("test_key".to_string(), "hash".to_string(), CachedResponse::new(200, json!({}), json!({}))).await;
+        let result = service.store_key("test_key".to_string(), "hash".to_string(), CachedResponse::new("hash".to_string(), 200, json!({}), json!({}))).await;
         assert!(result.is_err());
     }
 }

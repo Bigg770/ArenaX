@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT game_mode, COUNT(*) as cnt\n        FROM matches\n        WHERE created_at >= $1\n        GROUP BY game_mode\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "cnt",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "1e41e8853778b785617096571cd9960220f2c650d39c5e36b7a4677dbeb462ec"
+}

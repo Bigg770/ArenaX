@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT game, game_mode, COUNT(*) as player_count\n        FROM matchmaking_queue\n        WHERE status = $1\n        GROUP BY game, game_mode\n        ORDER BY game, game_mode\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "player_count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "990b23b4f353b04dac5697664a9edf748aa119bde897605ba466da19691a10c6"
+}

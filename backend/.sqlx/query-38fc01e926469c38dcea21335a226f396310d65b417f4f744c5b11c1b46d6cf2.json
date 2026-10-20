@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n            COUNT(*) as total_registrations,\n            MIN(tp.registered_at) as first_registration,\n            MAX(tp.registered_at) as last_registration,\n            COUNT(CASE WHEN tp.entry_fee_paid THEN 1 END) as paid_registrations,\n            COUNT(CASE WHEN tp.status = 2 THEN 1 END) as active_participants\n            FROM tournament_participants tp\n            WHERE tp.tournament_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_registrations",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "first_registration",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_registration",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "paid_registrations",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "active_participants",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "38fc01e926469c38dcea21335a226f396310d65b417f4f744c5b11c1b46d6cf2"
+}

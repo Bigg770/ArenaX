@@ -9,7 +9,7 @@ mod tests {
 
     /// Helper to create a test service instance
     fn create_test_service() -> MatchAuthorityService {
-        let db_pool = DbPool::default(); // Mock pool for unit tests
+        let db_pool = DbPool::connect_lazy("postgres://localhost/dummy").unwrap(); // Mock pool for unit tests
         let soroban_service = Arc::new(SorobanService::new(NetworkConfig::testnet()));
         let contract_id = "CTEST123".to_string();
 

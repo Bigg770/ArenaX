@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM tournament_participants WHERE tournament_id = $1 AND entry_fee_paid = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tournament_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "registered_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "entry_fee_paid",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "seed_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "current_round",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "eliminated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "final_rank",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "prize_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "prize_currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "prize_tx_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "328116c217f7959a548bed73d6e3f2928c28a0dcb1046e01d910bf21f37779b8"
+}
