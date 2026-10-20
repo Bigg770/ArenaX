@@ -569,4 +569,4 @@ For backend development questions:
 
 ---
 
-**Note**: This backend is designed to work with the ArenaX frontend and Stellar smart contracts. Ensure all components are properly configured for full functionality.
+/* … truncated 3893 chars — edit only what you need near the top … */
