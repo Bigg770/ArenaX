@@ -794,21 +794,6 @@ impl MatchService {
         // Create Elo history records
         self.create_elo_history(&match_record, winner_id).await?;
 
-        // Update on-chain reputation (if service is available)
-        if let Some(rep_service) = &self.reputation_service {
-            let players = vec![match_record.player1_id];
-            let skill_deltas = vec![25]; // Example: +25 for win, would be calculated based on outcome
-            
-            if let Err(e) = rep_service.update_reputation_on_match(
-                match_id,
-                &players,
-                &skill_deltas,
-            ).await {
-                error!("Failed to update reputation for match {}: {}", match_id, e);
-                // Don't fail the match completion, just log the error
-            }
-        }
-
         // Publish match completed event
         self.publish_match_event(serde_json::json!({
             "type": "completed",
