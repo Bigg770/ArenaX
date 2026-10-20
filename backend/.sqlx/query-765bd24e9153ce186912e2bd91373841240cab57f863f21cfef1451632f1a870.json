@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE wallets\n                    SET balance_ngn = balance_ngn + $1,\n                        escrow_balance = escrow_balance - $2,\n                        updated_at = $3\n                    WHERE user_id = $4\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Numeric",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "765bd24e9153ce186912e2bd91373841240cab57f863f21cfef1451632f1a870"
+}

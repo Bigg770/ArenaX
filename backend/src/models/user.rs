@@ -18,6 +18,12 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
+    pub skill_score: Option<i32>,
+    pub fair_play_score: Option<i32>,
+    pub reputation_last_updated: Option<DateTime<Utc>>,
+    pub anticheat_flags_count: Option<i32>,
+    pub is_bad_actor: Option<bool>,
+    pub is_beta_tester: bool,
     // Extended fields (may not be in all DB versions)
     pub password_hash: Option<String>,
     pub profile_image_url: Option<String>,

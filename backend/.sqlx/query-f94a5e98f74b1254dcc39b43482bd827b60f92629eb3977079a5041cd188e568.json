@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT * FROM elo_history\n        WHERE user_id = $1 AND game = $2\n        ORDER BY created_at DESC\n        LIMIT $3 OFFSET $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "match_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "rating_before",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "rating_change",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "opponent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "opponent_rating",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "result",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "f94a5e98f74b1254dcc39b43482bd827b60f92629eb3977079a5041cd188e568"
+}

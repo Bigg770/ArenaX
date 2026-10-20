@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT \n                COUNT(*) AS \"total_keys!\",\n                COUNT(*) FILTER (WHERE is_active AND \n                    (expiration_date IS NULL OR expiration_date > NOW()) AND\n                    (max_uses IS NULL OR use_count < max_uses)) AS \"active_keys!\",\n                COUNT(*) FILTER (WHERE expiration_date IS NOT NULL AND expiration_date < NOW()) AS \"expired_keys!\",\n                COUNT(*) FILTER (WHERE is_active = false) AS \"revoked_keys!\",\n                COUNT(*) FILTER (WHERE rotation_enabled AND \n                    next_rotation_date IS NOT NULL AND \n                    next_rotation_date < NOW()) AS \"keys_needing_rotation!\",\n                COALESCE(SUM(use_count), 0)::bigint AS \"total_uses!\",\n                COUNT(*) FILTER (WHERE max_uses IS NOT NULL) AS \"keys_with_max_uses!\"\n            FROM api_keys\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_keys!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "active_keys!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "expired_keys!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "revoked_keys!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "keys_needing_rotation!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "total_uses!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "keys_with_max_uses!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a746290604d937011da5c9d1ba4b1c13b3f0b8ee7f02c4e3e6c9f775e435294a"
+}

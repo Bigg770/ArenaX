@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT \n                id as user_id,\n                COALESCE(skill_score, 1000) as \"skill_score!\",\n                COALESCE(fair_play_score, 100) as \"fair_play_score!\",\n                reputation_last_updated,\n                COALESCE(is_bad_actor, false) as \"is_bad_actor!\"\n            FROM users\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "skill_score!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "fair_play_score!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "reputation_last_updated",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_bad_actor!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "335c057aa7ebdaec403e93fc239adff19659decf9fd50bd9ff170add5d2cdbaf"
+}

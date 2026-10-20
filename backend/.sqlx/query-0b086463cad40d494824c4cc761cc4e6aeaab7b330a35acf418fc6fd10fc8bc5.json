@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    INSERT INTO tournament_matches (\n                        id, tournament_id, round_id, match_number, player1_id, player2_id,\n                        status, created_at, updated_at\n                    ) VALUES (\n                        $1, $2, $3, $4, $5, $6, $7, $8, $9\n                    )\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "Uuid",
+        "Varchar",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0b086463cad40d494824c4cc761cc4e6aeaab7b330a35acf418fc6fd10fc8bc5"
+}

@@ -88,6 +88,12 @@ pub struct LeaderboardStats {
     pub last_updated: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct EloHistoryQuery {
+    pub start_date: Option<DateTime<Utc>>,
+    pub end_date: Option<DateTime<Utc>>,
+}
+
 // ─── Season close (#1075) ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
