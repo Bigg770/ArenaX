@@ -49,78 +49,64 @@ echo "Log File: $LOG_FILE"
 echo "Results File: $RESULTS_FILE"
 echo ""
 
-# Function to check if API is available
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 check_api_health() {
     echo -e "${YELLOW}🔍 Checking API health...${NC}"
-    
-    local max_attempts=30
-    local attempt=1
-    
+    local max_attempts=30 attempt=1
     while [ $attempt -le $max_attempts ]; do
         if curl -s -f "$API_BASE_URL/api/health" > /dev/null; then
             echo -e "${GREEN}✅ API is healthy${NC}"
             return 0
         fi
-        
-        echo -e "${YELLOW}⏳ Waiting for API... (attempt $attempt/$max_attempts)${NC}"
+        echo -e "${YELLOW}⏳ Waiting for API... ($attempt/$max_attempts)${NC}"
         sleep 2
         ((attempt++))
     done
-    
     echo -e "${RED}❌ API is not available${NC}"
     return 1
 }
 
-# Function to get auth token
-get_auth_token() {
-    echo -e "${YELLOW}🔐 Getting authentication token...${NC}"
-    
-    # This would need to be implemented based on your auth system
-    # For now, using a mock token
-    echo "mock_jwt_token_for_benchmark"
-}
-
-# Function to join queue
-join_queue() {
-    local user_id=$1
-    local token=$2
-    
-    curl -s -X POST "$API_BASE_URL/api/matchmaking/join" \
+# Seed reproducible data volume (idempotent; uses local benchmark creds only)
+seed_data() {
+    echo -e "${YELLOW}🌱 Seeding reproducible data (seed=$SEED)...${NC}"
+    curl -s -X POST "$API_BASE_URL/api/benchmark/seed" \
         -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $token" \
-        -d "{\"game\":\"$TEST_GAME\",\"game_mode\":\"$TEST_MODE\"}" \
-        -w "%{http_code}" \
-        -o /dev/null
+        -d "{\"seed\":$SEED,\"users\":$SEEDED_USERS,\"tournaments\":$SEEDED_TOURNAMENTS}" \
+        -o /dev/null -w "seed_http=%{http_code}\n" || true
 }
 
-# Function to leave queue
-leave_queue() {
-    local user_id=$1
-    local token=$2
-    
-    curl -s -X POST "$API_BASE_URL/api/matchmaking/leave" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $token" \
-        -d "{\"game\":\"$TEST_GAME\",\"game_mode\":\"$TEST_MODE\"}" \
-        -w "%{http_code}" \
-        -o /dev/null
+# Issue a single request; emit "http_code latency_ns"
+issue_request() {
+    local method=$1 path=$2 body=$3
+    local args=(-s -X "$method" "$API_BASE_URL$path" -o /dev/null -w "%{http_code} %{time_total}")
+    if [ "$body" != "-" ]; then
+        args+=(-H "Content-Type: application/json" -d "$body")
+    fi
+    curl "${args[@]}"
 }
 
-# Function to get queue status
-get_queue_status() {
-    local user_id=$1
-    local token=$2
-    
-    curl -s -X GET "$API_BASE_URL/api/matchmaking/status/$TEST_GAME/$TEST_MODE" \
-        -H "Authorization: Bearer $token"
+# Compute a percentile (ms) from the LATENCY_SAMPLES array for an endpoint
+percentile() {
+    local endpoint=$1 pct=$2
+    local samples=(${LATENCY_SAMPLES[$endpoint]:-})
+    local n=${#samples[@]}
+    [ "$n" -eq 0 ] && { echo "0"; return; }
+    local sorted=($(printf '%s\n' "${samples[@]}" | sort -n))
+    local idx=$(( (pct * n + 99) / 100 - 1 ))
+    [ $idx -lt 0 ] && idx=0
+    [ $idx -ge $n ] && idx=$((n - 1))
+    # ns -> ms with 2 decimals
+    awk -v v="${sorted[$idx]}" 'BEGIN { printf "%.2f", v / 1000000 }'
 }
 
-# Function to get matchmaking stats
-get_matchmaking_stats() {
-    local token=$1
-    
-    curl -s -X GET "$API_BASE_URL/api/matchmaking/stats" \
-        -H "Authorization: Bearer $token"
+# Sample dependency saturation (CPU/mem) for the API process, if available
+sample_saturation() {
+    local cpu mem
+    cpu=$(ps -o %cpu= -C "${API_PROCESS_NAME:-arenax-api}" 2>/dev/null | awk '{s+=$1} END {print s+0}')
+    mem=$(ps -o %mem= -C "${API_PROCESS_NAME:-arenax-api}" 2>/dev/null | awk '{s+=$1} END {print s+0}')
+    echo "${cpu:-0} ${mem:-0}"
 }
 
 # Function to fetch realtime service metrics (memory, queue depth, latency)
@@ -185,95 +171,64 @@ benchmark_queue_operations() {
         
         sleep 5
     done
-    
-    echo "Collected $sample_count samples"
-    
-    # Test leave operations
-    echo -e "${BLUE}📤 Testing Leave Operations${NC}"
-    
-    local successful_leaves=0
-    local failed_leaves=0
-    
-    for i in $(seq 1 $CONCURRENT_USERS); do
-        local user_id="benchmark_user_$i"
-        
-        if [ "$(leave_queue $user_id $token)" = "200" ]; then
-            ((successful_leaves++))
-        else
-            ((failed_leaves++))
-        fi
-        
-        if [ $((i % 100)) -eq 0 ]; then
-            echo -n "."
-        fi
-    done
-    
-    echo ""
-    echo "Leave Operations: $successful_leaves successful, $failed_leaves failed"
-    
-    # Get final stats
-    local final_stats=$(get_matchmaking_stats $token)
-    echo "Final queue size: $(echo $final_stats | jq -r '.total_players_in_queue // 0')"
-}
 
-# Function to benchmark API latency
-benchmark_api_latency() {
-    echo -e "${BLUE}⚡ Benchmarking API Latency${NC}"
-    
-    local token=$(get_auth_token)
-    local iterations=100
-    local total_time=0
-    
-    echo "Testing $iterations API calls..."
-    
-    for i in $(seq 1 $iterations); do
-        local start=$(date +%s%N)
-        get_matchmaking_stats $token > /dev/null
-        local end=$(date +%s%N)
-        
-        local duration=$((end - start))
-        total_time=$((total_time + duration))
-        
-        if [ $((i % 20)) -eq 0 ]; then
-            echo -n "."
-        fi
-    done
-    
-    echo ""
-    local avg_latency=$((total_time / iterations / 1000000)) # Convert to milliseconds
-    echo "Average API Latency: ${avg_latency}ms"
-}
+    # Warmup
+    echo -e "${YELLOW}⏳ Warmup ${WARMUP_TIME}s...${NC}"
+    sleep "$WARMUP_TIME"
 
-# Function to stress test Redis operations
-stress_test_redis() {
-    echo -e "${BLUE}🔥 Stress Testing Redis Operations${NC}"
-    
-    local token=$(get_auth_token)
-    local operations=10000
-    local start_time=$(date +%s)
-    
-    echo "Performing $operations Redis operations..."
-    
-    for i in $(seq 1 $operations); do
-        # Alternate join/leave operations
-        if [ $((i % 2)) -eq 0 ]; then
-            join_queue "stress_user_$i" $token > /dev/null
-        else
-            leave_queue "stress_user_$i" $token > /dev/null
-        fi
-        
-        if [ $((i % 1000)) -eq 0 ]; then
-            echo -n "."
-        fi
+    local start_time end_time total_requests=0 total_errors=0
+    start_time=$(date +%s)
+    end_time=$((start_time + duration))
+
+    while [ "$(date +%s)" -lt "$end_time" ]; do
+        for ep in "${ENDPOINTS[@]}"; do
+            IFS='|' read -r ename method path body <<< "$ep"
+            local result http latency_s
+            result=$(issue_request "$method" "$path" "$body")
+            http=$(echo "$result" | awk '{print $1}')
+            latency_s=$(echo "$result" | awk '{print $2}')
+            local latency_ns
+            latency_ns=$(awk -v s="$latency_s" 'BEGIN { printf "%d", s * 1000000000 }')
+
+            LATENCY_SAMPLES[$ename]+=" $latency_ns"
+            counts[$ename]=$(( ${counts[$ename]} + 1 ))
+            total_requests=$((total_requests + 1))
+
+            if [ "$http" -lt 200 ] || [ "$http" -ge 400 ]; then
+                errors[$ename]=$(( ${errors[$ename]} + 1 ))
+                total_errors=$((total_errors + 1))
+            fi
+        done
+        # Pace to approximate the target concurrency
+        sleep "$(awk -v c="$concurrency" 'BEGIN { printf "%.3f", 1 / c }')"
     done
-    
-    echo ""
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    local ops_per_sec=$((operations / duration))
-    
-    echo "Redis Operations: $operations in ${duration}s (${ops_per_sec} ops/sec)"
-}
+
+    local elapsed=$(( $(date +%s) - start_time ))
+    [ "$elapsed" -eq 0 ] && elapsed=1
+    local throughput
+    throughput=$(awk -v r="$total_requests" -v t="$elapsed" 'BEGIN { printf "%.2f", r / t }')
+    local error_rate
+    error_rate=$(awk -v e="$total_errors" -v r="$total_requests" 'BEGIN { printf "%.4f", (r>0 ? e/r : 0) }')
+
+    read -r cpu mem <<< "$(sample_saturation)"
+    local cpu_sat mem_sat
+    cpu_sat=$(awk -v c="$cpu" -v t="$CPU_SAT_THRESHOLD" 'BEGIN { print (c >= t) ? "true" : "false" }')
+    mem_sat=$(awk -v m="$mem" -v t="$MEM_SAT_THRESHOLD" 'BEGIN { print (m >= t) ? "true" : "false" }')
+
+    # Emit per-endpoint JSON
+    local endpoints_json="{"
+    local first=1
+    for ep in "${ENDPOINTS[@]}"; do
+        local ename="${ep%%|*}"
+        local p50 p95 p99
+        p50=$(percentile "$ename" 50)
+        p95=$(percentile "$ename" 95)
+        p99=$(percentile "$ename" 99)
+        [ $first -eq 0 ] && endpoints_json+=","
+        first=0
+        endpoints_json+="\"$ename\":{\"requests\":${counts[$ename]},\"errors\":${errors[$ename]},\"p50_ms\":$p50,\"p95_ms\":$p95,\"p99_ms\":$p99}"
+    done
+    endpoints_json+="}"
 
 # Function to simulate authenticated WebSocket clients joining rooms
 ws_connect_clients() {
@@ -485,20 +440,20 @@ generate_report() {
     # Create JSON report
     cat > "$RESULTS_FILE" << EOF
 {
-  "benchmark": {
-    "timestamp": "$(date -Iseconds)",
-    "configuration": {
-      "api_base_url": "$API_BASE_URL",
-      "test_game": "$TEST_GAME",
-      "test_mode": "$TEST_MODE",
-      "concurrent_users": $CONCURRENT_USERS,
-      "test_duration": $TEST_DURATION
-    },
-    "results": {
-      "final_stats": $final_stats,
-      "log_file": "$LOG_FILE"
-    }
-  }
+  "profile": "$name",
+  "concurrency": $concurrency,
+  "duration_s": $elapsed,
+  "throughput_rps": $throughput,
+  "total_requests": $total_requests,
+  "total_errors": $total_errors,
+  "error_rate": $error_rate,
+  "dependency_saturation": {
+    "cpu_percent": $cpu,
+    "mem_percent": $mem,
+    "cpu_saturated": $cpu_sat,
+    "mem_saturated": $mem_sat
+  },
+  "endpoints": $endpoints_json
 }
 EOF
     
