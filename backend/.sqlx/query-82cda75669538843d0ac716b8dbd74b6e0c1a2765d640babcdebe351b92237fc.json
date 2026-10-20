@@ -1,0 +1,171 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE api_keys\n            SET \n                name = COALESCE($1, name),\n                description = COALESCE($2, description),\n                scopes = COALESCE($3, scopes),\n                expiration_date = COALESCE($4, expiration_date),\n                rotation_enabled = COALESCE($5, rotation_enabled),\n                rotation_interval = COALESCE($6, rotation_interval),\n                next_rotation_date = COALESCE($7, next_rotation_date),\n                max_uses = COALESCE($8, max_uses),\n                overlap_duration_seconds = COALESCE($9, overlap_duration_seconds),\n                webhook_url = COALESCE($10, webhook_url),\n                updated_at = NOW()\n            WHERE id = $11 AND user_id = $12\n            RETURNING \n                id, key, name, description, user_id, key_type as \"key_type: KeyType\",\n                scopes, expiration_date, is_active, created_at, updated_at,\n                last_used_at, revoked_at, revoked_by, rotation_enabled,\n                rotation_interval, next_rotation_date, max_uses, use_count,\n                metadata, overlap_duration_seconds, old_key_hash,\n                old_key_expires_at, webhook_url\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "key_type: KeyType",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "expiration_date",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "revoked_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "rotation_enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "rotation_interval",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "next_rotation_date",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "max_uses",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 18,
+        "name": "use_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 19,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 20,
+        "name": "overlap_duration_seconds",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 21,
+        "name": "old_key_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 22,
+        "name": "old_key_expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 23,
+        "name": "webhook_url",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Text",
+        "TextArray",
+        "Timestamptz",
+        "Bool",
+        "Int8",
+        "Timestamptz",
+        "Int4",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "82cda75669538843d0ac716b8dbd74b6e0c1a2765d640babcdebe351b92237fc"
+}

@@ -1,0 +1,186 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT m.* FROM matches m\n            WHERE (m.player1_id = $1 OR m.player2_id = $1)\n            AND m.status IN ($2, $3)\n            ORDER BY m.created_at DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tournament_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "round_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "match_type",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "player1_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "player2_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "winner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "player1_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "player2_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "player1_elo_before",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "player2_elo_before",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "player1_elo_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "player2_elo_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "scheduled_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 19,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 20,
+        "name": "map",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 21,
+        "name": "match_duration",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 22,
+        "name": "report_deadline",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 23,
+        "name": "forfeited_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 24,
+        "name": "conflict_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 25,
+        "name": "round_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 26,
+        "name": "scheduled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 27,
+        "name": "match_number",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "77336bda2abdb74db4e4399bff32e345ae9b4b0447a32610e484a0ad4aa4501c"
+}

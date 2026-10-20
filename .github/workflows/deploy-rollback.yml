@@ -3,37 +3,14 @@ name: Deploy Rollback
 on:
   workflow_dispatch:
     inputs:
-      network:
-        description: "Target network (testnet only for rehearsal)"
-        required: true
-        default: "testnet"
-        type: choice
-        options:
-          - testnet
-      rpc_url:
-        description: "Soroban RPC URL for the target network"
-        required: true
-        default: "https://soroban-testnet.stellar.org"
-        type: string
-      identity:
-        description: "Stellar CLI identity used to sign transactions"
-        required: true
-        default: "testnet-rehearsal"
-        type: string
-      admin_public_key:
-        description: "Admin public key expected to control the contract"
-        required: true
-        type: string
-      wasm_path:
-        description: "Path to the compiled contract Wasm to deploy/upgrade"
-        required: true
-        default: "target/wasm32-unknown-unknown/release/arenax.wasm"
-        type: string
-      rehearsal:
-        description: "Run the full testnet rehearsal (deploy, initialize, register, upgrade, verify, recovery)"
-        required: true
-        default: true
-        type: boolean
+      target_release:
+        description: "Release/artifact identity to restore (defaults to the last known-good release)"
+        required: false
+        default: ""
+      reason:
+        description: "Operator reason for the rollback (recorded in output)"
+        required: false
+        default: ""
 
 jobs:
   rehearsal:
@@ -113,11 +90,31 @@ jobs:
     steps:
       - name: Run rollback on the deploy host
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          TARGET_RELEASE: ${{ inputs.target_release }}
+          ROLLBACK_REASON: ${{ inputs.reason }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 10m
+          envs: TARGET_RELEASE,ROLLBACK_REASON
           script: |
+            set -euo pipefail
             cd /opt/arenax
-            ./scripts/deploy/rollback.sh
+
+            echo "::group::Rollback decision points"
+            echo "requested_target_release=${TARGET_RELEASE:-<last-known-good>}"
+            echo "reason=${ROLLBACK_REASON:-<none provided>}"
+            echo "::endgroup::"
+
+            # Rollback restores the prior application artifact only.
+            # Schema is NOT reversed: migrations are backward-compatible and
+            # destructive reversal is unsafe. The rollback script must honor
+            # this contract (restore artifact, leave schema in place).
+            ./scripts/deploy/rollback.sh "${TARGET_RELEASE:-}"
+
+            echo "::group::Rollback result"
+            echo "rollback_decision=restored_prior_artifact"
+            echo "schema_reversal=skipped (backward-compatible migrations retained)"
+            echo "::endgroup::"

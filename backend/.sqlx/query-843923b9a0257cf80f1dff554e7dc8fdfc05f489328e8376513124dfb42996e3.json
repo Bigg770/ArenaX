@@ -1,0 +1,196 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM users WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "phone_number",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "email",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "display_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "bio",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "country_code",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_verified",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "role",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "last_login_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "skill_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "fair_play_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "reputation_last_updated",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "anticheat_flags_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 18,
+        "name": "is_bad_actor",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 19,
+        "name": "is_beta_tester",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 20,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 21,
+        "name": "password_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 22,
+        "name": "profile_image_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 23,
+        "name": "reputation_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 24,
+        "name": "stellar_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 25,
+        "name": "stellar_public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 26,
+        "name": "total_earnings",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 27,
+        "name": "is_banned",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 28,
+        "name": "banned_until",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 29,
+        "name": "device_fingerprint",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "843923b9a0257cf80f1dff554e7dc8fdfc05f489328e8376513124dfb42996e3"
+}

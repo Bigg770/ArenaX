@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE stellar_accounts\n            SET balance_xlm = $1, updated_at = $2\n            WHERE public_key = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f0b49dff0543ad62496506dc1121638bf61e0dcc82b8d2a3519d23ccf851c15"
+}

@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO match_reconciliation_log (\n                id, match_id, off_chain_state, on_chain_state, is_divergent, metadata\n            ) VALUES (\n                $1, $2, $3, $4, $5, $6\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "match_authority_state",
+            "kind": {
+              "Enum": [
+                "CREATED",
+                "STARTED",
+                "COMPLETED",
+                "DISPUTED",
+                "FINALIZED"
+              ]
+            }
+          }
+        },
+        "Varchar",
+        "Bool",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "040d9f3e4fb2e944186d885a4a5d0ac1f4183d3f820254770a7e74dcc6a64e7e"
+}

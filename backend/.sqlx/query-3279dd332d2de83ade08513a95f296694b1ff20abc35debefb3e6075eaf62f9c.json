@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE users\n            SET \n                fair_play_score = GREATEST(0, COALESCE(fair_play_score, 100) - $1),\n                anticheat_flags_count = COALESCE(anticheat_flags_count, 0) + 1,\n                reputation_last_updated = NOW(),\n                updated_at = NOW(),\n                is_bad_actor = CASE \n                    WHEN COALESCE(fair_play_score, 100) - $1 < 30 THEN true\n                    ELSE is_bad_actor\n                END\n            WHERE id = $2\n            RETURNING fair_play_score\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fair_play_score",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "3279dd332d2de83ade08513a95f296694b1ff20abc35debefb3e6075eaf62f9c"
+}

@@ -1,0 +1,108 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT * FROM match_disputes\n            WHERE status = $1\n            ORDER BY created_at ASC\n            LIMIT $2 OFFSET $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "match_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "disputing_player_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "evidence_urls",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_reviewer_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "admin_notes",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "resolution",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "resolved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "evidence_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "evidence_s3_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "resolved_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "e21d2c629d8d37cc2284ed0c02960bf227ec8cf72c581431afe298522d764cbb"
+}

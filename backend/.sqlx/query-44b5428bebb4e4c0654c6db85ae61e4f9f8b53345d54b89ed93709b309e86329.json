@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                game                                                AS \"game_mode!: String\",\n                games_played                                        AS \"matches_played!: i32\",\n                wins                                               AS \"wins!: i32\",\n                losses                                             AS \"losses!: i32\",\n                draws                                              AS \"draws!: i32\"\n            FROM user_elo\n            WHERE user_id = $1\n              AND games_played >= $2\n            ORDER BY games_played DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game_mode!: String",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "matches_played!: i32",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "wins!: i32",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "losses!: i32",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "draws!: i32",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "44b5428bebb4e4c0654c6db85ae61e4f9f8b53345d54b89ed93709b309e86329"
+}

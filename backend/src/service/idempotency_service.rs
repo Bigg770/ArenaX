@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 use sqlx;
 use uuid::Uuid;
 
+#[derive(Clone)]
 pub struct IdempotencyService {
-    db_pool: DbPool,
-    policy: IdempotencyPolicy,
+    pub db_pool: DbPool,
+    pub policy: IdempotencyPolicy,
 }
 
 impl IdempotencyService {
@@ -67,7 +68,10 @@ impl IdempotencyService {
         let result = sqlx::query_as!(
             IdempotencyKey,
             r#"
-            SELECT * FROM idempotency_keys 
+            SELECT 
+                id, key, request_hash, response_status, response_headers, response_body,
+                created_at, expires_at, used_at
+            FROM idempotency_keys 
             WHERE key = $1 
             AND expires_at > NOW()
             AND used_at IS NOT NULL
@@ -141,7 +145,7 @@ impl IdempotencyService {
         .await
         .map_err(|e| ApiError::database_error(e))?;
 
-        Ok(result.rows_affected())
+        Ok(result.rows_affected() as i64)
     }
 
     /// Get statistics about idempotency key usage
@@ -193,7 +197,10 @@ impl IdempotencyService {
         let keys = sqlx::query_as!(
             IdempotencyKey,
             r#"
-            SELECT ik.* FROM idempotency_keys ik
+            SELECT 
+                ik.id, ik.key, ik.request_hash, ik.response_status, ik.response_headers, ik.response_body,
+                ik.created_at, ik.expires_at, ik.used_at
+            FROM idempotency_keys ik
             JOIN request_logs rl ON ik.key = rl.idempotency_key
             WHERE rl.user_id = $1
             ORDER BY ik.created_at DESC
@@ -233,16 +240,16 @@ impl IdempotencyService {
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (route_pattern) 
                 DO UPDATE SET 
-                    enabled = EXCLUDED.enabled,
-                    ttl_seconds = EXCLUDED.ttl_seconds,
-                    max_response_size_kb = EXCLUDED.max_response_size_kb,
-                    updated_at = EXCLUDED.updated_at
+                enabled = EXCLUDED.enabled,
+                ttl_seconds = EXCLUDED.ttl_seconds,
+                max_response_size_kb = EXCLUDED.max_response_size_kb,
+                updated_at = EXCLUDED.updated_at
                 "#,
                 Uuid::new_v4(),
                 route,
                 true,
                 policy.default_ttl_seconds,
-                policy.max_response_size_kb,
+                policy.max_response_size_kb as i32,
                 Utc::now(),
                 Utc::now()
             )

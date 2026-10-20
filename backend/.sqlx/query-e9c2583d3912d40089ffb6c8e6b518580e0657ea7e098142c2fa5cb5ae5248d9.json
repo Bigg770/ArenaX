@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE transaction_monitor\n            SET completed_at = $1,\n                duration_ms = $2,\n                status = $3,\n                error_message = $4\n            WHERE id = $5\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8",
+        {
+          "Custom": {
+            "name": "transaction_status",
+            "kind": {
+              "Enum": [
+                "started",
+                "completed",
+                "failed",
+                "retried",
+                "rolled_back"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e9c2583d3912d40089ffb6c8e6b518580e0657ea7e098142c2fa5cb5ae5248d9"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE api_keys\n            SET \n                old_key_hash = $1,\n                old_key_expires_at = $2,\n                overlap_duration_seconds = $3,\n                updated_at = NOW()\n            WHERE id = $4 AND user_id = $5\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a234b8f1fc0c04d8637278bcb7d0149949ba962762851f04dfc9b1f2ffe6736f"
+}

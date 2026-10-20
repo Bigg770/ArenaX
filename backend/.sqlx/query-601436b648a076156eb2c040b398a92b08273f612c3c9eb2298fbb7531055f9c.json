@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(MAX(tr.round_number), 0) as current_round FROM tournament_rounds tr JOIN tournament_matches tm ON tr.id = tm.round_id WHERE tr.tournament_id = $1 AND tm.status IN ('in_progress', 'completed')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_round",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "601436b648a076156eb2c040b398a92b08273f612c3c9eb2298fbb7531055f9c"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO analytics_player_behaviour\n                (user_id, game_id, matches_played, wins, avg_session_secs, last_active)\n            VALUES ($1, $2, 1, $3, $4, NOW())\n            ON CONFLICT (user_id, game_id) DO UPDATE SET\n                matches_played   = analytics_player_behaviour.matches_played + 1,\n                wins             = analytics_player_behaviour.wins + EXCLUDED.wins,\n                avg_session_secs = (\n                    analytics_player_behaviour.avg_session_secs\n                    * analytics_player_behaviour.matches_played\n                    + EXCLUDED.avg_session_secs\n                ) / (analytics_player_behaviour.matches_played + 1),\n                last_active      = NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e64cea53ca3a92684aaeee351527cf6b88c69a23ba4b4bcf431067c9921844e"
+}

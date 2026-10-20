@@ -2,6 +2,25 @@
 
 ArenaX uses **JWT Bearer tokens** with short-lived access tokens and longer-lived refresh tokens.
 
+## Contract version
+
+The public API contract is versioned and published as an OpenAPI document:
+
+- **Current contract version:** `1.0.0`
+- **OpenAPI document:** served at `/api/docs/openapi.json` (also available in the repo under `docs/api/openapi.json`)
+- **Source of truth:** the contract is generated/validated from the Rust and TypeScript server sources; the published document is the authoritative description of request/response schemas, auth requirements, pagination, and error codes.
+
+Every endpoint in this guide (auth, tournament, match, wallet, dispute, notification) is described in that document with concrete schemas and examples. The examples in this guide are exercised by the endpoint contract tests in CI.
+
+## Deprecation policy
+
+- **Breaking changes require an explicit decision.** Any change that removes or renames a field, changes a type, tightens validation, changes an error code, or alters auth requirements is a breaking change.
+- **Breaking changes require a version bump** of the contract (major version) and a corresponding **deprecation entry** in the OpenAPI document (`deprecated: true` on the affected operation/schema, plus a changelog note).
+- **Minimum notice window:** deprecated endpoints/fields remain functional for at least **90 days** (or two minor releases, whichever is longer) after the deprecation entry is published.
+- **CI enforcement:** a contract-diff check runs in CI against the published OpenAPI document. It fails the build when a breaking change is detected without a version bump and deprecation entry, so breaking changes cannot land silently.
+- **Validation in CI:** schema linting and endpoint contract tests run on every pull request.
+=======
+
 ## Token Lifecycle
 
 ```

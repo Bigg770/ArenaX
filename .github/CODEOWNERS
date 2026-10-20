@@ -1,20 +1,6 @@
-# Global fallback
-* @hydrax117
+# Default owners
+* @handsoff-maintainers
 
-# Smart contracts — require contract team review
-/contracts/ @hydrax117
-
-# DB migrations — require backend lead review
-/backend/migrations/ @hydrax117
-
-# CI/CD and workflow changes
-/.github/ @hydrax117
-
-# Frontend
-/frontend/ @hydrax117
-
-# TypeScript server
-/server/ @hydrax117
-
-# Rust backend
-/backend/src/ @hydrax117
+# Supply-chain policy and exceptions require security review
+/.github/supply-chain-exceptions.json @handsoff-maintainers @handsoff-security
+/.github/workflows/supply-chain.yml @handsoff-maintainers @handsoff-security
