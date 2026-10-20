@@ -18,6 +18,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useNotifications } from "@/contexts/NotificationContext";
 import { loginSchema, type LoginFormData } from "@/lib/validations/auth";
 import { cn } from "@/lib/utils";
+import { safeRedirectPath } from "@/lib/safeNavigation";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -66,7 +67,7 @@ export default function LoginPage() {
         duration: 3000,
       });
       const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
-      const redirect = params.get("redirect") ?? "/";
+      const redirect = safeRedirectPath(params.get("redirect"));
       router.replace(redirect);
     }
   }, [user, router, addToast]);

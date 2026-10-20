@@ -13,6 +13,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AuthUser, LoginRequest, RegisterRequest } from "@/types";
 import { api } from "@/lib/api";
 import { AuthApiError, REGISTER_ERROR_MAP } from "@/lib/authErrors";
+import "@/lib/authStorage";
 
 // ---------------------------------------------------------------------------
 // Types
