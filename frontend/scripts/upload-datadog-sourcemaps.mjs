@@ -1,27 +1,21 @@
 /**
- * Datadog source map uploader — Issue #1100.
+ * Datadog source map uploader and scrubber — Issue #50 / #1100.
  *
  * Uploads the Browser Source Maps produced by `next build` (with
  * `productionBrowserSourceMaps: true`) to Datadog so production JavaScript
  * errors render meaningful file/line references instead of minified stacks.
  *
- * Runs as the `postbuild` / `upload:sourcemaps` npm script. It is a no-op
- * (exit 0) unless the Datadog credentials are configured, so CI builds that
- * don't have secrets are unaffected:
+ * Security & Privacy:
+ * After uploading to Datadog (or during production builds), this script removes
+ * the `.map` files from the build output directory so they are NEVER publicly
+ * served in production.
  *
- *   DATADOG_API_KEY             (or DD_API_KEY)
- *   DATADOG_APPLICATION_KEY     (or DD_APP_KEY / DD_APPLICATION_KEY)
- *   DATADOG_SITE                (optional, default: datadoghq.com)
- *   DATADOG_SERVICE             (optional, default: arenax-frontend)
- *   NEXT_PUBLIC_APP_VERSION     (optional — release version must match the
- *                                version configured in RumProvider)
- *
- * Uses Node's built-in fetch (Node >= 18) so no extra dependency is needed.
+ * Runs as the `postbuild` / `upload:sourcemaps` npm script.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join, posix, relative } from "node:path";
+import { join, posix } from "node:path";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -35,7 +29,10 @@ const APP_KEY =
 const SITE = process.env.DATADOG_SITE || "datadoghq.com";
 const SERVICE = process.env.DATADOG_SERVICE || "arenax-frontend";
 const VERSION =
-  process.env.NEXT_PUBLIC_APP_VERSION || process.env.DATADOG_VERSION || "";
+  process.env.NEXT_PUBLIC_APP_VERSION ||
+  process.env.NEXT_PUBLIC_RELEASE_ID ||
+  process.env.DATADOG_VERSION ||
+  "1.0.0";
 
 const NEXT_DIR = join(ROOT, ".next");
 
@@ -50,6 +47,21 @@ function collectSourceMaps(dir, out = []) {
     }
   }
   return out;
+}
+
+function removeSourceMaps(maps) {
+  let count = 0;
+  for (const mapPath of maps) {
+    try {
+      if (existsSync(mapPath)) {
+        unlinkSync(mapPath);
+        count++;
+      }
+    } catch (err) {
+      console.warn(`[datadog-sourcemaps] Failed to remove ${mapPath}:`, err.message);
+    }
+  }
+  console.log(`[datadog-sourcemaps] Cleaned up ${count} source map files from build output.`);
 }
 
 async function uploadSourceMap(sourceMapPath) {
@@ -67,18 +79,23 @@ async function uploadSourceMap(sourceMapPath) {
 }
 
 async function main() {
-  if (!API_KEY || !APP_KEY) {
+  const maps = collectSourceMaps(NEXT_DIR);
+
+  if (maps.length === 0) {
     console.log(
-      "[datadog-sourcemaps] DATADOG_API_KEY / DATADOG_APPLICATION_KEY not set — skipping source map upload.",
+      "[datadog-sourcemaps] No source maps found under .next — skipping upload.",
     );
     return 0;
   }
 
-  const maps = collectSourceMaps(NEXT_DIR);
-  if (maps.length === 0) {
+  if (!API_KEY || !APP_KEY) {
     console.log(
-      "[datadog-sourcemaps] No source maps found under .next — was `next build` run with productionBrowserSourceMaps?",
+      "[datadog-sourcemaps] DATADOG_API_KEY / DATADOG_APPLICATION_KEY not set — skipping upload.",
     );
+    // In production builds, ensure maps are scrubbed even if upload is skipped
+    if (process.env.NODE_ENV === "production" || process.env.CLEAN_SOURCEMAPS === "true") {
+      removeSourceMaps(maps);
+    }
     return 0;
   }
 
@@ -89,7 +106,7 @@ async function main() {
   }
 
   console.log(
-    `[datadog-sourcemaps] Uploading ${files.length} source maps to ${SITE} (service=${SERVICE}, version=${VERSION || "unknown"})…`,
+    `[datadog-sourcemaps] Uploading ${files.length} source maps to ${SITE} (service=${SERVICE}, version=${VERSION})…`,
   );
 
   const endpoint = `https://api.${SITE}/api/v2/srcmap`;
@@ -118,6 +135,8 @@ async function main() {
       console.error(
         `[datadog-sourcemaps] Upload failed (HTTP ${res.status}): ${body}`,
       );
+      // Clean up maps even on failure to avoid leaking them publicly
+      removeSourceMaps(maps);
       return 1;
     }
     uploaded += chunk.length;
@@ -125,6 +144,9 @@ async function main() {
       `[datadog-sourcemaps] Uploaded ${uploaded}/${files.length} source maps.`,
     );
   }
+
+  // Remove source maps from .next build so they are not publicly accessible
+  removeSourceMaps(maps);
 
   console.log("[datadog-sourcemaps] Done.");
   return 0;

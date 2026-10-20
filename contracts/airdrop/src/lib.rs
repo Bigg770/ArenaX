@@ -14,8 +14,8 @@
 //!
 //! The admin initialises the contract with:
 //! - `token`       — the AX token contract address
-//! - `merkle_root` — root of a Merkle tree whose leaves are
-//!   `sha256(address || amount)`
+//! - `merkle_root` — root of leaves binding the network, contract, token,
+//!   campaign, beneficiary, and amount
 //! - `total_amount` — total tokens deposited into this contract
 //! - `expires_at`  — ledger timestamp after which no new claims are accepted
 //!
@@ -49,13 +49,15 @@ pub enum DataKey {
     ExpiresAt,
     RecoveryAddress,
     Paused,
-    /// Nullifier: tracks which addresses have already claimed.
-    /// Key: address → bool
+    /// Legacy nullifier key retained for upgraded in-flight campaigns.
     Claimed(Address),
     /// Airdrop metadata
     AirdropId,
     /// Uniform token amount each eligible address may claim (#1059).
     TokenAmountPerAddress,
+    CampaignId,
+    LeafVersion,
+    CampaignClaimed(u32, Address),
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -139,6 +141,8 @@ impl AirdropContract {
             .instance()
             .set(&DataKey::RecoveryAddress, &recovery_address);
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().set(&DataKey::CampaignId, &0u32);
+        env.storage().instance().set(&DataKey::LeafVersion, &1u32);
 
         env.events()
             .publish((symbol_short!("INIT"), &admin), (total_amount, expires_at));
@@ -151,7 +155,7 @@ impl AirdropContract {
     /// Admin-only, and the contract must already be initialized (token,
     /// recovery address, and accounting total come from `initialize`).
     ///
-    /// - `merkle_root` — root of a sorted-pair tree of `sha256(address || amount)`
+    /// - `merkle_root` — root of a sorted-pair tree of domain-separated leaves
     /// - `token_amount_per_address` — the only amount a proof may claim
     /// - `expiry` — ledger timestamp after which claims are rejected and the
     ///   admin may call `recover_unclaimed`
@@ -169,6 +173,15 @@ impl AirdropContract {
             panic!("expiry must be in the future");
         }
 
+        let campaign_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CampaignId)
+            .unwrap_or(0);
+        let campaign_id = campaign_id
+            .checked_add(1)
+            .expect("campaign id overflow");
+
         env.storage()
             .instance()
             .set(&DataKey::MerkleRoot, &merkle_root);
@@ -176,6 +189,10 @@ impl AirdropContract {
             .instance()
             .set(&DataKey::TokenAmountPerAddress, &token_amount_per_address);
         env.storage().instance().set(&DataKey::ExpiresAt, &expiry);
+        env.storage()
+            .instance()
+            .set(&DataKey::CampaignId, &campaign_id);
+        env.storage().instance().set(&DataKey::LeafVersion, &1u32);
 
         env.events().publish(
             (symbol_short!("AIR_CFG"),),
@@ -209,12 +226,24 @@ impl AirdropContract {
             panic!("merkle proof too deep");
         }
         Self::require_snapshot_amount(&env, amount);
+        let campaign_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CampaignId)
+            .unwrap_or(0);
+        let leaf_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LeafVersion)
+            .unwrap_or(0);
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let claim_key = Self::claim_key(campaign_id, claimant.clone(), leaf_version);
 
         // Check nullifier — prevent double-claiming
         if env
             .storage()
             .persistent()
-            .get::<DataKey, bool>(&DataKey::Claimed(claimant.clone()))
+            .get::<DataKey, bool>(&claim_key)
             .unwrap_or(false)
         {
             panic!("already claimed");
@@ -222,7 +251,16 @@ impl AirdropContract {
 
         // Verify the directed Merkle proof.
         let root: BytesN<32> = env.storage().instance().get(&DataKey::MerkleRoot).unwrap();
-        let leaf = compute_leaf(&env, &claimant, amount);
+        let contract_addr = env.current_contract_address();
+        let leaf = compute_leaf(
+            &env,
+            &contract_addr,
+            &claimant,
+            &token,
+            campaign_id,
+            leaf_version,
+            amount,
+        );
         if !verify_merkle_proof(&env, leaf, &proof, &root) {
             panic!("invalid merkle proof");
         }
@@ -244,7 +282,7 @@ impl AirdropContract {
         // Mark as claimed (nullifier)
         env.storage()
             .persistent()
-            .set(&DataKey::Claimed(claimant.clone()), &true);
+            .set(&claim_key, &true);
 
         // Update claimed counter
         env.storage()
@@ -252,8 +290,6 @@ impl AirdropContract {
             .set(&DataKey::ClaimedAmount, &new_claimed);
 
         // Transfer tokens
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let contract_addr = env.current_contract_address();
         token::Client::new(&env, &token).transfer(&contract_addr, &claimant, &amount);
 
         let now = env.ledger().timestamp();
@@ -271,7 +307,7 @@ impl AirdropContract {
     ///
     /// Issue #1059 specifies `claim(proof, amount)`. Soroban has no implicit
     /// caller, so `claimant` is authenticated with `require_auth` and is the
-    /// address mixed into the leaf `sha256(address || amount)`. `proof` is the
+    /// address mixed into the leaf with the active campaign domain. `proof` is the
     /// sibling path of a sorted-pair Merkle tree (depth 20 is supported).
     ///
     /// Claimed addresses are stored in persistent storage. A second claim by
@@ -296,18 +332,39 @@ impl AirdropContract {
             panic!("merkle proof too deep");
         }
         Self::require_snapshot_amount(&env, amount);
+        let campaign_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CampaignId)
+            .unwrap_or(0);
+        let leaf_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LeafVersion)
+            .unwrap_or(0);
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let claim_key = Self::claim_key(campaign_id, claimant.clone(), leaf_version);
 
         if env
             .storage()
             .persistent()
-            .get::<DataKey, bool>(&DataKey::Claimed(claimant.clone()))
+            .get::<DataKey, bool>(&claim_key)
             .unwrap_or(false)
         {
             panic!("already claimed");
         }
 
         let root: BytesN<32> = env.storage().instance().get(&DataKey::MerkleRoot).unwrap();
-        let leaf = compute_leaf(&env, &claimant, amount);
+        let contract_addr = env.current_contract_address();
+        let leaf = compute_leaf(
+            &env,
+            &contract_addr,
+            &claimant,
+            &token,
+            campaign_id,
+            leaf_version,
+            amount,
+        );
         if !verify_sorted_merkle_proof(&env, leaf, &proof, &root) {
             panic!("invalid merkle proof");
         }
@@ -327,13 +384,11 @@ impl AirdropContract {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Claimed(claimant.clone()), &true);
+            .set(&claim_key, &true);
         env.storage()
             .instance()
             .set(&DataKey::ClaimedAmount, &new_claimed);
 
-        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let contract_addr = env.current_contract_address();
         token::Client::new(&env, &token).transfer(&contract_addr, &claimant, &amount);
 
         let now = env.ledger().timestamp();
@@ -363,6 +418,16 @@ impl AirdropContract {
 
         let root: BytesN<32> = env.storage().instance().get(&DataKey::MerkleRoot).unwrap();
         let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let campaign_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CampaignId)
+            .unwrap_or(0);
+        let leaf_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LeafVersion)
+            .unwrap_or(0);
         let contract_addr = env.current_contract_address();
         let client = token::Client::new(&env, &token);
 
@@ -392,13 +457,25 @@ impl AirdropContract {
             if env
                 .storage()
                 .persistent()
-                .get::<DataKey, bool>(&DataKey::Claimed(claimant.clone()))
+                .get::<DataKey, bool>(&Self::claim_key(
+                    campaign_id,
+                    claimant.clone(),
+                    leaf_version,
+                ))
                 .unwrap_or(false)
             {
                 panic!("already claimed");
             }
 
-            let leaf = compute_leaf(&env, &claimant, amount);
+            let leaf = compute_leaf(
+                &env,
+                &contract_addr,
+                &claimant,
+                &token,
+                campaign_id,
+                leaf_version,
+                amount,
+            );
             if !verify_merkle_proof(&env, leaf, &proof, &root) {
                 panic!("invalid merkle proof");
             }
@@ -412,7 +489,10 @@ impl AirdropContract {
 
             env.storage()
                 .persistent()
-                .set(&DataKey::Claimed(claimant.clone()), &true);
+                .set(
+                    &Self::claim_key(campaign_id, claimant.clone(), leaf_version),
+                    &true,
+                );
             client.transfer(&contract_addr, &claimant, &amount);
 
             env.events()
@@ -538,10 +618,37 @@ impl AirdropContract {
     // ── Views ────────────────────────────────────────────────────────────────
 
     pub fn has_claimed(env: Env, claimant: Address) -> bool {
-        env.storage()
+        let campaign_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CampaignId)
+            .unwrap_or(0);
+        Self::has_claimed_for_campaign(env, campaign_id, claimant)
+    }
+
+    pub fn has_claimed_for_campaign(env: Env, campaign_id: u32, claimant: Address) -> bool {
+        let current_campaign_claim = env
+            .storage()
             .persistent()
-            .get::<DataKey, bool>(&DataKey::Claimed(claimant))
-            .unwrap_or(false)
+            .get::<DataKey, bool>(&DataKey::CampaignClaimed(
+                campaign_id,
+                claimant.clone(),
+            ))
+            .unwrap_or(false);
+        current_campaign_claim
+            || (campaign_id == 0
+                && env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, bool>(&DataKey::Claimed(claimant))
+                    .unwrap_or(false))
+    }
+
+    pub fn get_campaign_id(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CampaignId)
+            .unwrap_or(0)
     }
 
     pub fn get_merkle_root(env: Env) -> BytesN<32> {
@@ -650,6 +757,14 @@ impl AirdropContract {
             panic!("airdrop has expired");
         }
     }
+
+    fn claim_key(campaign_id: u32, claimant: Address, leaf_version: u32) -> DataKey {
+        if leaf_version == 0 && campaign_id == 0 {
+            DataKey::Claimed(claimant)
+        } else {
+            DataKey::CampaignClaimed(campaign_id, claimant)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -657,21 +772,47 @@ mod test;
 
 // ─── Merkle helpers ───────────────────────────────────────────────────────────
 
-/// Compute the leaf hash: sha256(address_bytes || amount_bytes).
-///
-/// The leaf encodes the claimant's entitlement so that each (address, amount)
-/// pair maps to a unique leaf.
-fn compute_leaf(env: &Env, claimant: &Address, amount: i128) -> BytesN<32> {
-    // Encode: 16-byte big-endian amount appended after the address xdr bytes.
-    let mut buf = claimant.clone().to_xdr(env);
-
-    // Append amount as 16-byte big-endian (i128)
-    let amount_bytes = amount.to_be_bytes();
-    for b in amount_bytes.iter() {
-        buf.push_back(*b);
+/// Hash `domain || network_id || contract_xdr || token_xdr || campaign_id_be ||
+/// claimant_xdr || amount_i128_be` so leaves cannot be replayed across drops.
+fn compute_leaf(
+    env: &Env,
+    contract_address: &Address,
+    claimant: &Address,
+    token: &Address,
+    campaign_id: u32,
+    leaf_version: u32,
+    amount: i128,
+) -> BytesN<32> {
+    if leaf_version == 0 {
+        let mut legacy = claimant.clone().to_xdr(env);
+        for byte in amount.to_be_bytes().iter() {
+            legacy.push_back(*byte);
+        }
+        return env.crypto().sha256(&legacy).into();
     }
 
-    // Hash the combined buffer
+    let mut buf = Bytes::new(env);
+    for byte in b"ArenaX/Airdrop/claim/v1" {
+        buf.push_back(*byte);
+    }
+    for byte in env.ledger().network_id().to_array().iter() {
+        buf.push_back(*byte);
+    }
+    for byte in contract_address.clone().to_xdr(env).iter() {
+        buf.push_back(*byte);
+    }
+    for byte in token.clone().to_xdr(env).iter() {
+        buf.push_back(*byte);
+    }
+    for byte in campaign_id.to_be_bytes().iter() {
+        buf.push_back(*byte);
+    }
+    for byte in claimant.clone().to_xdr(env).iter() {
+        buf.push_back(*byte);
+    }
+    for byte in amount.to_be_bytes().iter() {
+        buf.push_back(*byte);
+    }
     env.crypto().sha256(&buf).into()
 }
 

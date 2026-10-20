@@ -21,10 +21,7 @@ bcrypt = "0.15"
 actix = "0.13"
 actix-web-actors = "4.3"
 anyhow = "1.0"
-async-trait = "0.1"
-bytes = "1.0"
-ipnetwork = "0.20"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "std", "json"] }
 tracing-opentelemetry = "0.33"
@@ -51,6 +48,9 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["derive"] }
 # sqlx's ConnectOptions::log_slow_statements/log_statements take log::LevelFilter (#1084)
 log = "0.4"
+# Secure upload processing (#85): server-side content sniffing independent of
+# client-declared MIME types, plus object-key isolation for private storage.
+infer = "0.16"
 
 
 # Security: pin patched versions of transitive deps

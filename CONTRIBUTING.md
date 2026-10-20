@@ -81,3 +81,37 @@ npm run build
 - Migrations are append-only — never edit an existing migration file
 - Test both `up` and `down` migrations locally before opening a PR
 - Column/type changes require a multi-step migration (add → backfill → drop)
+
+## Dependency & supply-chain gate
+
+CI runs a lockfile-aware dependency and software-supply-chain gate across every
+package ecosystem in the repo (Rust `backend/Cargo.lock`, Node lockfiles in
+`server/` and `frontend/`, and the `contracts/` workspace). The gate reports the
+identity of both direct and transitive dependencies, checks them against known
+advisories, and reports the license of each detected dependency.
+
+- **High-severity findings fail the build.** A high/critical advisory blocks the
+  PR or release unless a reviewed exception is recorded (see below).
+- **Scan results are retained** as CI artifacts tied to release provenance
+  (commit SHA, ref, and run id) so a release can be traced back to the exact
+  dependency set that was scanned.
+- **Normal builds stay offline-friendly.** The gate reads committed lockfiles and
+  does not make ordinary `cargo build` / `npm ci` steps depend on network
+  advisory lookups.
+
+### Exception process
+
+When a high-severity finding cannot be fixed immediately, record a time-bounded,
+reviewed exception instead of disabling the gate:
+
+1. Add an entry to the advisory exception file (e.g. `.github/security/advisory-exceptions.yml`)
+   with the advisory ID, the affected package/ecosystem, a justification, and an
+   **expiry date**.
+2. Get review from a maintainer (security-sensitive — treat like a contract change).
+3. The gate honors the exception only until its expiry date; once expired the
+   finding fails the build again and the exception must be renewed or the
+   dependency upgraded/removed.
+
+Exceptions are scoped to a single advisory and package — never blanket-disable
+the gate. Prefer upgrading or removing the vulnerable dependency over adding an
+exception.

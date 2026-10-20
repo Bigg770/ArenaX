@@ -1,8 +1,8 @@
-# 🎮 ArenaX Backend
+# Backend
 
-## Overview
+Rust (Axum) API service for the evidence and media platform.
 
-The ArenaX backend is a high-performance **Rust-based microservices architecture** that powers the competitive gaming tournament platform. It integrates with the **Stellar blockchain** for transparent prize pool management, payouts, and reputation tracking, while providing real-time matchmaking and AI-driven anti-cheat capabilities.
+## Running locally
 
 ## Tech Stack
 

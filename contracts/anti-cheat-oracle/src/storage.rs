@@ -92,6 +92,7 @@ pub enum DataKey {
 
     // Confirmations (persistent) — backward-compatible
     Confirmation(Address, u64), // (player, match_id) → AntiCheatConfirmation
+    Attestation(Address, u64, String), // (player, match, domain)
 
     // Analytics (persistent)
     AnalyticsTotals,            // AnalyticsTotals
@@ -157,6 +158,20 @@ pub struct FeedReading {
     pub match_id: u64,
     pub timestamp: u64,
     pub anomaly_score: u32, // 0-100 computed on submission
+}
+
+/// Replay-protected anti-cheat decision tied to one signer and match domain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationRecord {
+    pub oracle: Address,
+    pub player: Address,
+    pub match_id: u64,
+    pub domain: String,
+    pub severity: u32,
+    pub penalty_applied: i128,
+    pub issued_at: u64,
+    pub expires_at: u64,
 }
 
 /// A real-time cheat detection rule.
