@@ -1,7 +1,16 @@
 name: Deploy Rollback
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      target_release:
+        description: "Release/artifact identity to restore (defaults to the last known-good release)"
+        required: false
+        default: ""
+      reason:
+        description: "Operator reason for the rollback (recorded in output)"
+        required: false
+        default: ""
 
 jobs:
   rollback:
@@ -11,11 +20,31 @@ jobs:
     steps:
       - name: Run rollback on the deploy host
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          TARGET_RELEASE: ${{ inputs.target_release }}
+          ROLLBACK_REASON: ${{ inputs.reason }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 10m
+          envs: TARGET_RELEASE,ROLLBACK_REASON
           script: |
+            set -euo pipefail
             cd /opt/arenax
-            ./scripts/deploy/rollback.sh
+
+            echo "::group::Rollback decision points"
+            echo "requested_target_release=${TARGET_RELEASE:-<last-known-good>}"
+            echo "reason=${ROLLBACK_REASON:-<none provided>}"
+            echo "::endgroup::"
+
+            # Rollback restores the prior application artifact only.
+            # Schema is NOT reversed: migrations are backward-compatible and
+            # destructive reversal is unsafe. The rollback script must honor
+            # this contract (restore artifact, leave schema in place).
+            ./scripts/deploy/rollback.sh "${TARGET_RELEASE:-}"
+
+            echo "::group::Rollback result"
+            echo "rollback_decision=restored_prior_artifact"
+            echo "schema_reversal=skipped (backward-compatible migrations retained)"
+            echo "::endgroup::"

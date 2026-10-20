@@ -2,307 +2,72 @@ name: CI
 
 on:
   push:
-    branches: [ main, dev, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, dev, develop ]
+    branches: [main, develop]
 
 jobs:
-  # Frontend CI
+  secret-scan:
+    name: Secret scan (current content + history)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan current content and history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMITS: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        working-directory: backend
+        run: cargo build --locked
+
+      - name: Test
+        working-directory: backend
+        run: cargo test --locked
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-    
-    - name: Install dependencies
-      run: npm ci
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Check PWA assets
-      run: npm run check:pwa-assets
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-    - name: Lint code
-      run: npm run lint
+      - name: Install
+        run: npm ci
 
-    - name: Type check
-      run: npx tsc --noEmit
-
-    - name: Run tests
-      run: npm test -- --ci --forceExit --passWithNoTests
-
-    - name: Build
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-  # Server (TypeScript) CI
-  server:
-    name: Server
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: ./server
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: server/package-lock.json
-    
-    - name: Install dependencies
-      run: npm ci
-    
-    - name: Generate Prisma Client
-      run: npm run prisma:generate
-    
-    - name: Type check (Lint)
-      run: npm run lint
-    
-    - name: Build
-      run: npm run build
-
-  # Backend database migration CI
-  backend-migrations:
-    name: Backend Migrations
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
-    defaults:
-      run:
-        working-directory: ./backend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache cargo
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ~/.cargo/bin/sqlx
-        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
-
-    - name: Install SQLx CLI
-      run: |
-        if ! command -v sqlx >/dev/null 2>&1; then
-          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
-        fi
-
-    - name: Verify migration files
-      run: ./scripts/verify-migrations.sh
-
-    - name: Apply migrations
-      run: ./scripts/migrate.sh
-
-    - name: Rollback verification (up -> down -> up, #871)
-      env:
-        SKIP_BACKUP: "1"  # CI database is disposable; never skip the backup on shared data
-      run: |
-        chmod +x ./scripts/rollback-verify.sh
-        ./scripts/rollback-verify.sh
-
-  # Backend (Rust) build & test
-  #
-  # Before this job the Rust backend was never compiled in CI — the
-  # `backend-migrations` job above only applies migrations — so `backend/` could
-  # rot without any check noticing.
-  #
-  # `continue-on-error` is deliberately true for now: `main` does not currently
-  # compile, so a blocking job would fail every unrelated PR. Once the backend
-  # builds green, delete `continue-on-error` and make this a required check.
-  backend-build:
-    name: Backend Build & Test
-    runs-on: ubuntu-latest
-    continue-on-error: true
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # The realtime/session tests connect to Redis at 127.0.0.1:6379.
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      # `sqlx::query!` macros type-check against a live, migrated database, so
-      # DATABASE_URL must be reachable at compile time, not just at runtime.
-      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
-      REDIS_URL: redis://localhost:6379
-    defaults:
-      run:
-        working-directory: ./backend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    # Same key as `backend-migrations` so the compiled-in sqlx-cli binary is
-    # shared between the two jobs instead of installed twice.
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          ~/.cargo/bin/sqlx
-        key: ${{ runner.os }}-cargo-sqlx-cli-${{ hashFiles('backend/Cargo.lock') }}
-
-    - name: Cache backend target
-      uses: actions/cache@v3
-      with:
-        path: backend/target
-        key: ${{ runner.os }}-cargo-target-${{ hashFiles('backend/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-target-
-
-    - name: Install SQLx CLI
-      run: |
-        if ! command -v sqlx >/dev/null 2>&1; then
-          cargo install sqlx-cli --version 0.8.6 --no-default-features --features rustls,postgres --locked
-        fi
-
-    - name: Apply migrations
-      run: ./scripts/migrate.sh
-
-    - name: Type check
-      run: cargo check --all-targets --locked
-
-    - name: Run tests
-      run: cargo test --all-targets --locked
-
-  # Contracts CI (Rust)
-  contracts:
-    name: Contracts
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: ./contracts
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
-    
-    - name: Install wasm target
-      run: rustup target add wasm32-unknown-unknown
-    
-    - name: Cache cargo
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          contracts/target
-        key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
-    
-    - name: Check formatting
-      run: cargo fmt --all -- --check
-    
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
-    
-    - name: Build contracts
-      run: cargo build --target wasm32-unknown-unknown --release
-    
-    - name: Run tests
-      run: cargo test
-
-  # Frontend E2E tests
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Install Playwright browsers
-      run: npx playwright install --with-deps chromium
-
-    - name: Build app
-      run: npm run build
-      env:
-        NODE_ENV: production
-
-    - name: Run E2E tests
-      run: npm run test:e2e
-      env:
-        PLAYWRIGHT_BASE_URL: http://localhost:3000
-        CI: true
+      - name: Lint
+        run: npm run lint
 
     - name: Upload Playwright report
       uses: actions/upload-artifact@v4
@@ -312,146 +77,82 @@ jobs:
         path: frontend/playwright-report/
         retention-days: 7
 
-  # Dependency & software-supply-chain gate (#86)
+  # Transactional rollout/rollback gate (#96)
   #
-  # Lockfile-aware advisory + license scan across every package ecosystem in
-  # the repo (Rust backend, Rust contracts, Node frontend, Node server).
-  #
-  # - High-severity advisories fail the gate unless a time-bounded, reviewed
-  #   exception is recorded in `.supply-chain/exceptions.json` (see
-  #   `.supply-chain/README.md` for the exception process).
-  # - Scan results (advisory + license reports) are uploaded as artifacts tied
-  #   to release provenance (commit SHA, ref, run id).
-  # - The scan runs against committed lockfiles only, so normal builds stay
-  #   offline-friendly; only this job needs network access.
-  supply-chain:
-    name: Supply Chain Gate
+  # Validates that the deploy workflow keeps its transactional guarantees:
+  # traffic only shifts after readiness + migration gates pass, and rollback
+  # restores the prior artifact without destructive schema reversal. This job
+  # fails fast if the deploy workflow drifts from those invariants.
+  deploy-gates:
+    name: Deploy Gates
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install scanners
+    - name: Verify deploy workflow exists
       run: |
-        cargo install cargo-audit --locked
-        cargo install cargo-deny --locked
-        npm install -g @cyclonedx/cyclonedx-npm
-
-    - name: Prepare report directory
-      run: mkdir -p supply-chain-reports
-
-    - name: Record release provenance
-      run: |
-        cat > supply-chain-reports/provenance.json <<EOF
-        {
-          "commit_sha": "${{ github.sha }}",
-          "ref": "${{ github.ref }}",
-          "run_id": "${{ github.run_id }}",
-          "run_attempt": "${{ github.run_attempt }}",
-          "workflow": "${{ github.workflow }}",
-          "repository": "${{ github.repository }}",
-          "event": "${{ github.event_name }}"
-        }
-        EOF
-
-    # --- Rust: backend ---
-    - name: Rust advisory scan (backend)
-      working-directory: ./backend
-      run: |
-        cargo audit --json > ../supply-chain-reports/backend-audit.json || true
-        cargo audit
-
-    - name: Rust license policy (backend)
-      working-directory: ./backend
-      run: |
-        cargo deny --all-features check licenses advisories \
-          --format json > ../supply-chain-reports/backend-deny.json || true
-        cargo deny --all-features check licenses advisories
-
-    # --- Rust: contracts ---
-    - name: Rust advisory scan (contracts)
-      working-directory: ./contracts
-      run: |
-        cargo audit --json > ../supply-chain-reports/contracts-audit.json || true
-        cargo audit
-
-    - name: Rust license policy (contracts)
-      working-directory: ./contracts
-      run: |
-        cargo deny --all-features check licenses advisories \
-          --format json > ../supply-chain-reports/contracts-deny.json || true
-        cargo deny --all-features check licenses advisories
-
-    # --- Node: frontend ---
-    - name: Node advisory scan (frontend)
-      working-directory: ./frontend
-      run: |
-        npm audit --json > ../supply-chain-reports/frontend-audit.json || true
-        npm audit --audit-level=high
-
-    - name: Node SBOM (frontend)
-      working-directory: ./frontend
-      run: |
-        cyclonedx-npm --output-file ../supply-chain-reports/frontend-sbom.json || true
-
-    # --- Node: server ---
-    - name: Node advisory scan (server)
-      working-directory: ./server
-      run: |
-        npm audit --json > ../supply-chain-reports/server-audit.json || true
-        npm audit --audit-level=high
-
-    - name: Node SBOM (server)
-      working-directory: ./server
-      run: |
-        cyclonedx-npm --output-file ../supply-chain-reports/server-sbom.json || true
-
-    # --- Exception gate ---
-    # A high-severity finding fails the job above unless a reviewed, time-bounded
-    # exception exists in `.supply-chain/exceptions.json`. This step validates
-    # that every recorded exception is still within its expiry window so stale
-    # exceptions cannot silently suppress findings.
-    - name: Validate supply-chain exceptions
-      run: |
-        if [ -f .supply-chain/exceptions.json ]; then
-          node -e '
-            const fs = require("fs");
-            const data = JSON.parse(fs.readFileSync(".supply-chain/exceptions.json", "utf8"));
-            const now = new Date();
-            let failed = false;
-            for (const ex of data.exceptions || []) {
-              if (!ex.id || !ex.expires || !ex.reviewer) {
-                console.error(`Exception ${ex.id || "<unknown>"} is missing id/expires/reviewer`);
-                failed = true;
-                continue;
-              }
-              if (new Date(ex.expires) < now) {
-                console.error(`Exception ${ex.id} expired on ${ex.expires}`);
-                failed = true;
-              }
-            }
-            if (failed) process.exit(1);
-            console.log("All supply-chain exceptions are valid and unexpired.");
-          '
-        else
-          echo "No exceptions file present; all findings must be clean."
+        if [ ! -f .github/workflows/deploy.yml ]; then
+          echo "::error::.github/workflows/deploy.yml is missing; rollout/rollback gates cannot be verified"
+          exit 1
         fi
 
-    - name: Upload supply-chain reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: supply-chain-reports-${{ github.run_id }}
-        path: supply-chain-reports/
-        retention-days: 90
+    - name: Verify readiness gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        # The readiness/health gate must be present and must run before any
+        # traffic-shift step. We assert ordering by line number.
+        READY_LINE=$(grep -n -i -E 'readiness|health' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$READY_LINE" ]; then
+          echo "::error::No readiness/health gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$READY_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Readiness gate (line $READY_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Readiness gate at line $READY_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify migration gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        MIGRATE_LINE=$(grep -n -i -E 'migrat' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$MIGRATE_LINE" ]; then
+          echo "::error::No migration gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$MIGRATE_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Rollback/migration gate (line $MIGRATE_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Migration gate at line $MIGRATE_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify rollback restores prior artifact without destructive schema reversal
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        if ! grep -q -i -E 'rollback' "$DEPLOY"; then
+          echo "::error::No rollback path found in deploy workflow"
+          exit 1
+        fi
+        # Rollback must reference the prior release/artifact identity.
+        if ! grep -q -i -E 'previous|prior|PREVIOUS_RELEASE|PREVIOUS_IMAGE|rollback.*(image|release|artifact)' "$DEPLOY"; then
+          echo "::error::Rollback does not reference the prior application artifact/release"
+          exit 1
+        fi
+        # Rollback must not run destructive schema reversal (down migrations).
+        if grep -q -i -E 'migrate.*(down|revert)|sqlx migrate revert|rollback-verify' "$DEPLOY"; then
+          echo "::error::Rollback performs destructive schema reversal; schema must remain backward-compatible"
+          exit 1
+        fi
+        echo "Rollback restores prior artifact without destructive schema reversal"

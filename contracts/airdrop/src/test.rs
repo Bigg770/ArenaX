@@ -168,3 +168,12 @@ fn depth_20_claim_is_measured() {
         resources.write_entries
     );
 }
+
+#[test]
+#[should_panic(expected = "additional budget is not funded")]
+fn campaign_budget_cannot_exceed_funded_tokens() {
+    let (env, client, _, _, _, _) = setup();
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.update_merkle_root(&root, &1);
+}
