@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) as count FROM matches\n            WHERE (player1_id = $1 OR player2_id = $1)\n            AND ($2::text IS NULL OR game_mode = $2)\n            AND status = $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dd63cc83fd6e9a8dfb543bdc284a786891a9fa131d36e60270dd0a99547b398c"
+}

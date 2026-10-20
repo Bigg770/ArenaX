@@ -158,4 +158,252 @@ backend/
 ├── tests/                # Integration and unit tests
 │   ├── common/           # Shared test utilities
 │   ├── integration/      # End-to-end integration tests
-│   └── unit/             # Unit
+│   └── unit/             # Unit tests for individual modules
+├── target/               # Rust build artifacts
+├── Cargo.toml           # Rust dependencies and workspace configuration
+├── Cargo.lock           # Locked dependency versions
+├── Dockerfile           # Container configuration
+├── test_ci_locally.sh   # Local CI testing script
+└── README.md            # This documentation
+```
+
+## Setup & Development
+
+### Prerequisites
+- Rust toolchain (`cargo`, `rustup`) - latest stable version
+- PostgreSQL (v15+) with sharding support
+- Redis (v7+) with Pub/Sub enabled
+- `sqlx-cli` (v0.8.6)
+- MinIO (or AWS S3) for file storage
+- Docker and Docker Compose for local development
+- Stellar CLI and SDK for blockchain integration
+- Node.js (v18+) for testing scripts
+
+### Build & CI Prerequisites
+Building all targets and running tests requires reachable PostgreSQL and Redis instances, as SQLx query macros perform compile-time SQL verification against the migrated schema:
+
+- `DATABASE_URL`: Connection string to migrated PostgreSQL database (e.g. `postgres://arenax:arenax@localhost:5432/arenax_ci`).
+- `REDIS_URL`: Connection string to Redis server (e.g. `redis://localhost:6379`).
+
+CI runs without `continue-on-error` on `backend-build`, strictly enforcing that compiler checks, type validation, and tests pass against live services.
+
+### Installation
+
+```bash
+# Requires a Docker daemon for testcontainers.
+cargo test --all-features -- --test-threads=8
+```
+
+### Development & CI Commands
+
+```bash
+# Type check all targets (lib, bin, tests, examples) against migrated database
+cargo check --all-targets --locked
+
+# Run tests against live database and Redis
+cargo test --all-targets --locked
+
+# Run tests with coverage
+cargo test --coverage
+
+# Run integration tests
+cargo test --test integration
+
+# Run specific test module
+cargo test auth::tests
+
+# Check code formatting
+cargo fmt
+
+## Service SLOs, Alerts & Runbooks
+
+Operational targets are tied to player-impacting workflows rather than generic health
+indicators. Each SLO below has a measured signal, evaluation window, owner, and an
+error-budget response. Signals are emitted by `src/telemetry.rs` (structured request
+metrics) and surfaced in the dashboards described in [docs/OBSERVABILITY.md](../docs/OBSERVABILITY.md).
+
+### SLO Definitions
+
+| Workflow | SLI (measured signal) | SLO target | Window | Owner |
+| --- | --- | --- | --- | --- |
+| **Login** | Ratio of `POST /auth/login` responses with status < 500 and p95 latency | 99.9% success, p95 < 400 ms | 30 days (rolling) | Auth team |
+| **Tournament join** | Ratio of `POST /tournaments/{id}/join` responses with status < 500 and p95 latency | 99.5% success, p95 < 800 ms | 30 days (rolling) | Tournament team |
+| **Match updates** | Ratio of `PATCH /matches/{id}` (score/state) responses with status < 500 and p95 latency | 99.5% success, p95 < 500 ms | 30 days (rolling) | Match team |
+| **Settlement** | Ratio of settlement jobs completing without error and p95 job duration | 99.0% success, p95 < 5 s | 30 days (rolling) | Wallet team |
+
+### SQLx Offline Compilation & Query Metadata Workflow
+
+ArenaX supports SQLx offline mode so developers and CI can build the backend targets without needing a live, persistent PostgreSQL database.
+
+#### 1. Building in Offline Mode
+To compile the backend without connecting to a database:
+```bash
+# Enable offline mode using the committed .sqlx query metadata
+SQLX_OFFLINE=true cargo check --all-targets --locked
+```
+
+#### 2. Generating & Updating Query Metadata
+Whenever you write new queries, edit existing `sqlx::query!` / `sqlx::query_as!` macros, or add/alter database migrations:
+1. Ensure your local PostgreSQL service is running and migrations are applied:
+   ```bash
+   export DATABASE_URL="postgres://arenax:arenax@localhost:5432/arenax_ci"
+   ./scripts/migrate.sh
+   ```
+2. Generate reproducible query metadata across all targets:
+   ```bash
+   cargo sqlx prepare -- --all-targets
+   ```
+3. Commit the updated query metadata files in the `.sqlx/` directory to version control.
+
+#### 3. CI Detection of Stale or Missing Metadata
+CI validates that committed query metadata exactly matches the real migration schema:
+```bash
+cargo sqlx prepare --check -- --all-targets
+```
+If a query macro has changed without updating `.sqlx/`, or if metadata is missing, this check will fail CI with actionable errors identifying the out-of-sync queries.
+
+#### 4. When Online Database Validation is Still Required
+- **Schema & Query Changes**: Modifying table definitions, adding migrations, or writing new SQL queries **must** be validated against a live database using `cargo sqlx prepare -- --all-targets` or online `cargo check`. Offline mode only replays previously validated query signatures.
+- **Runtime Testing**: Running integration tests (`cargo test`) that execute database transactions requires a real PostgreSQL database instance.
+
+### Environment Variables
+
+```env
+# Database
+DATABASE_URL=postgres://user:pass@localhost:5432/arenax
+BACKEND_MIGRATION_MODE=run
+REDIS_URL=redis://localhost:6379
+
+# Storage
+S3_ENDPOINT=http://localhost:9000
+S3_ACCESS_KEY=minio
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# Every secret must be at least 32 characters long and must not be a known
+# placeholder (`supersecretkey`, `changeme`, ...). The backend refuses to start
+# otherwise. Generate real values with `openssl rand -base64 48`.
+S3_SECRET_KEY=dev-only-s3-secret-replace-me-0123456789
+
+# Payments
+PAYSTACK_SECRET=dev-only-paystack-secret-replace-me-0123456789
+FLUTTERWAVE_SECRET=dev-only-flutterwave-secret-replace-me-0123456789
+
+# Authentication
+JWT_SECRET=dev-only-jwt-secret-replace-me-0123456789abcdef
+# Optional: dedicated refresh-token secret (falls back to JWT_SECRET when unset)
+JWT_REFRESH_SECRET=
+
+# Stellar Configuration
+STELLAR_NETWORK_URL=https://horizon-testnet.stellar.org
+STELLAR_ADMIN_SECRET=dev-only-stellar-admin-secret-replace-me
+SOROBAN_CONTRACT_PRIZE=CAXXX...
+SOROBAN_CONTRACT_REPUTATION=CBXXX...
+
+# AI
+AI_MODEL_PATH=./models/anti_cheat.tflite
+```
+
+Each SLO carries a 30-day error budget (`1 - SLO target`). Response is burn-rate driven:
+
+- **< 50% budget consumed**: normal operation, no action.
+- **50–75% consumed**: owner reviews recent error sources weekly; file follow-ups for top contributors.
+- **75–100% consumed**: freeze non-critical changes to the affected workflow; owner prioritizes reliability fixes.
+- **Budget exhausted**: feature work on the workflow pauses until the budget recovers; incident review required.
+
+### Alert Thresholds
+
+Alerts are derived from the SLOs and use multi-window burn rates so transient noise does
+not page. A page fires only when **both** a fast (5 min) and slow (1 h) window exceed the
+threshold; single-window spikes route to the team channel instead of paging.
+
+| Alert | Condition | Severity |
+| --- | --- | --- |
+| `LoginErrorBudgetFastBurn` | 5 min error rate > 14.4x budget **and** 1 h error rate > 14.4x budget | Page |
+| `LoginLatencyDegraded` | p95 > 400 ms sustained for 10 min | Ticket |
+| `TournamentJoinFastBurn` | 5 min error rate > 14.4x budget **and** 1 h error rate > 14.4x budget | Page |
+| `MatchUpdateFastBurn` | 5 min error rate > 14.4x budget **and** 1 h error rate > 14.4x budget | Page |
+| `SettlementFastBurn` | 5 min failure rate > 14.4x budget **and** 1 h failure rate > 14.4x budget | Page |
+| `SettlementBacklog` | pending settlements > 100 for 15 min | Ticket |
+
+Transient single-request failures, brief latency blips, and deploy-window noise are
+excluded via the sustained-window requirement and a 5-minute deploy suppression.
+
+### Runbooks
+
+Each alert links to a runbook covering first checks, safe mitigations, escalation, and
+recovery verification.
+
+**Login (`LoginErrorBudgetFastBurn` / `LoginLatencyDegraded`)**
+1. *First checks*: confirm auth service health, DB connection pool saturation, and recent deploys in the last 30 min.
+2. *Safe mitigations*: roll back the last auth deploy if correlated; scale auth replicas; verify Redis session store reachable.
+3. *Escalation*: page Auth on-call; escalate to platform on-call if DB or Redis is the root cause.
+4. *Recovery verification*: error rate back under budget for 30 min and p95 < 400 ms on the dashboard.
+
+**Tournament join (`TournamentJoinFastBurn`)**
+1. *First checks*: tournament service health, DB write latency, and lock contention on tournament rows.
+2. *Safe mitigations*: shed load via rate limiting; disable non-essential join side effects; roll back recent tournament deploy.
+3. *Escalation*: Tournament on-call; platform on-call for DB issues.
+4. *Recovery verification*: join success rate ≥ 99.5% over 30 min and p95 < 800 ms.
+
+**Match updates (`MatchUpdateFastBurn`)**
+1. *First checks*: match service health, Redis Pub/Sub lag, and downstream anti-cheat latency.
+2. *Safe mitigations*: decouple anti-cheat scoring to async if blocking; roll back recent match deploy; scale match replicas.
+3. *Escalation*: Match on-call; anti-cheat owner if AI service is the bottleneck.
+4. *Recovery verification*: update success rate ≥ 99.5% over 30 min and p95 < 500 ms.
+
+**Settlement (`SettlementFastBurn` / `SettlementBacklog`)**
+1. *First checks*: Stellar Horizon reachability, wallet service health, and settlement job queue depth.
+2. *Safe mitigations*: pause new settlement submissions; retry failed jobs idempotently; fail over to backup Horizon endpoint.
+3. *Escalation*: Wallet on-call; escalate to Stellar integration owner for chain-side failures.
+4. *Recovery verification*: settlement success rate ≥ 99.0% over 30 min, backlog drained, and p95 job duration < 5 s.
+
+### Staging Validation
+
+To validate alerts and runbooks, simulate one dependency outage in staging:
+
+1. Block egress to Stellar Horizon (or stop Redis) in the staging environment.
+2. Confirm the corresponding burn-rate alert fires within the fast window and pages the correct owner.
+3. Walk the runbook end-to-end: perform first checks, apply a safe mitigation, and verify escalation routing.
+4. Restore the dependency and confirm recovery verification steps pass (error rate and latency back within SLO).
+5. Record gaps found in the runbook and update it before the next drill.
+
+## Project Structure
+
+```
+backend/
+├── src/
+│   ├── api_error.rs       # Centralized error handling and API error types
+│   ├── config.rs          # Configuration management and environment variables
+│   ├── db.rs              # Database connection and connection pooling
+│   ├── lib.rs             # Library root and public API exports
+│   ├── main.rs            # Application entry point and server startup
+│   ├── middleware.rs      # Custom middleware implementations
+│   ├── telemetry.rs       # Logging, tracing, and observability setup
+│   ├── auth/              # Authentication and authorization modules
+│   │   ├── mod.rs         # Auth module exports
+│   │   ├── jwt.rs         # JWT token handling
+│   │   ├── stellar.rs     # Stellar account management
+│   │   └── otp.rs         # OTP verification system
+│   ├── http/              # HTTP handlers and route definitions
+│   │   ├── mod.rs         # HTTP module exports
+│   │   ├── auth.rs        # Authentication endpoints
+│   │   ├── tournaments.rs # Tournament management endpoints
+│   │   ├── matches.rs     # Match and matchmaking endpoints
+│   │   ├── wallet.rs      # Payment and Stellar integration endpoints
+│   │   ├── lead
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid request (validation failure) |
+| `401` | Missing or invalid bearer token |
+| `403` | Authenticated but not authorized for this action |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. duplicate resource) |
+| `429` | Rate limited |
+| `500` | Internal server error |
+
+# Increase case count locally
+PROPTEST_CASES=10000 cargo test --test property_brackets
+```
+
+/* … truncated 3893 chars — edit only what you need near the top … */

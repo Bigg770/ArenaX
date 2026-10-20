@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE jobs\n            SET status = 'done', result = $2, error = NULL, updated_at = NOW(), completed_at = NOW()\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d6946f79a8c42661004aef3104a8d22117ce2ec5b60f3482815af46ea9d39a72"
+}

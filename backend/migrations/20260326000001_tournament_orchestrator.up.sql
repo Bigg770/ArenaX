@@ -9,3 +9,11 @@ CREATE INDEX idx_tournament_rounds_tournament_status ON tournament_rounds(tourna
 
 -- Index for finding matches in a round efficiently
 CREATE INDEX idx_tournament_matches_round_status ON tournament_matches(round_id, status);
+
+-- Deterministic end-to-end lifecycle test support (#112)
+-- Tag test-created tournaments so the integration suite can tear them down
+-- completely, leaving no persistent test data behind.
+ALTER TABLE tournaments ADD COLUMN is_test BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Index for the integration suite to locate and purge test tournaments
+CREATE INDEX idx_tournaments_is_test ON tournaments(is_test) WHERE is_test;

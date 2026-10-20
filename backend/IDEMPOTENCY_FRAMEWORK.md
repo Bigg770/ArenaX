@@ -233,6 +233,59 @@ TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
 cargo test idempotency_integration
 ```
 
+### Sandboxed Deposit & Payout End-to-End Tests
+
+The end-to-end suite exercises the full deposit/payout lifecycle against a fake
+provider so that provider callbacks and ledger settlement are verified together
+rather than in isolation. It runs in CI with no real credentials and no network
+dependency.
+
+#### Fake provider orchestration
+
+A `SandboxProvider` stands in for the real payment provider and drives every
+stage of the lifecycle:
+
+- **Initiation** - returns a deterministic provider reference for a deposit or
+  withdrawal request.
+- **Webhook** - emits signed callbacks (success, failure, replay, tampered
+  signature, mismatched amount) that are fed through the real webhook handler.
+- **Reconciliation** - exposes a queryable provider state so the reconciler can
+  settle pending transactions.
+- **Withdrawal** - simulates payout submission and terminal outcomes.
+- **Ambiguous outcome recovery** - can return a timeout/unknown result so the
+  recovery path is exercised before any retry.
+
+```bash
+# Run the sandboxed end-to-end suite
+cargo test sandbox_e2e
+
+# Run a single scenario
+cargo test sandbox_e2e::deposit_success_credits_ledger_once
+```
+
+#### Scenarios and assertions
+
+| Scenario | Assertion |
+| --- | --- |
+| Successful deposit | Exactly one ledger credit is created for the payment. |
+| Replayed callback | No additional ledger entry; response is idempotent. |
+| Invalid signature callback | Rejected; no financial side effect. |
+| Mismatched amount callback | Rejected; no financial side effect. |
+| Payout timeout | Reconciled before retry; transaction reaches a user-visible terminal state. |
+
+Each scenario asserts on the ledger (entry count and balance) as well as the
+provider-facing status, so a passing test proves the callback and the ledger
+agree.
+
+#### CI execution
+
+The suite is wired into CI and requires no secrets:
+
+```bash
+# No provider credentials or network access required
+cargo test sandbox_e2e -- --nocapture
+```
+
 ### Performance Tests
 
 ```bash
@@ -241,6 +294,49 @@ cargo test --release idempotency_performance
 
 # Load testing
 curl -X GET http://localhost:8080/api/test/performance?count=1000
+```
+
+### Stress & Race Boundary Tests
+
+Idempotency and transaction race boundaries are exercised across every write surface that
+mutates durable state. Each scenario runs repeatedly against PostgreSQL and Redis to prove
+that duplicate requests and worker contention cannot produce double side effects.
+
+#### Covered surfaces
+
+| Surface | Duplicate-request invariant | Race invariant |
+| --- | --- | --- |
+| Wallet mutations | Exactly one ledger entry per key | Final balance equals sum of committed entries |
+| Provider events | Exactly one provider event row per key | No duplicate settlement for one provider event |
+| Match finalization | Exactly one finalized match per key | Final match state is terminal and consistent |
+| Tournament transitions | Exactly one transition per key | Tournament state advances monotonically |
+| Settlement workers | Exactly one settlement per key | Ledger totals match settled amounts |
+
+#### Assertions
+
+- **Single durable side effect** - After N identical requests sharing one idempotency key, the
+  ledger/match tables contain exactly one row for that operation. Assertions query the database
+  (ledger entries, balances, match status, tournament state), not just the HTTP status code.
+- **Conflicting payloads rejected** - Reusing an idempotency key with a different payload returns
+  `409 Conflict` and leaves the original durable side effect untouched.
+- **Race invariants** - Concurrent workers/requests are launched in parallel; after they settle,
+  the final ledger and match invariants are asserted (no lost updates, no double spends, no
+  partially applied transitions).
+
+#### Running the stress scenarios
+
+```bash
+# Parallel integration scenarios against PostgreSQL + Redis
+TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
+TEST_REDIS_URL=redis://localhost:6379 \
+cargo test --release idempotency_race -- --test-threads=1
+
+# Repeat each scenario to surface flakiness
+for i in $(seq 1 20); do
+  TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
+  TEST_REDIS_URL=redis://localhost:6379 \
+  cargo test --release idempotency_race || exit 1
+done
 ```
 
 ## 🔍 Monitoring & Debugging

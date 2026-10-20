@@ -224,6 +224,37 @@ cargo test matchmaker::tests::test_queue_operations
 cargo test matchmaker::tests::test_performance
 ```
 
+### Property Tests (Fairness & Uniqueness)
+
+The matchmaking queue and pairing logic is covered by seeded property tests that
+generate players with ratings, games, regions, wait times, and cancellation
+events, then assert the following invariants over each generated event sequence:
+
+- **Uniqueness**: a player is never assigned to two active matches at the same
+  time. Every assignment removes the player from the queue and records them in
+  the active-match set; a second assignment for an already-active player is a
+  failure.
+- **Eligibility & rating policy**: every produced pair satisfies the documented
+  eligibility rules (same game and game mode, both players queued and not
+  cancelled) and the rating policy in effect at assignment time — the ELO gap
+  must be within the dynamically expanded search radius for the pair's wait
+  time, and never exceed `max_elo_gap`.
+- **Reservation lifecycle**: cancellation and retry sequences eventually release
+  or persist each reservation. A cancelled player is removed from the queue and
+  never appears in a later match; a retried player is re-queued exactly once and
+  is eligible again.
+
+Property tests are seeded so failures are reproducible, and any discovered
+counterexample is added to a regression corpus that is replayed on every run.
+
+```bash
+# Run the matchmaking property tests
+cargo test matchmaker::property_tests
+
+# Replay the regression corpus of discovered counterexamples
+cargo test matchmaker::property_tests::regression_corpus
+```
+
 ### Integration Tests
 
 ```bash
@@ -342,41 +373,4 @@ redis-cli KEYS "queue:*" | wc -l
 tail -f /var/log/arenax/matchmaker.log
 
 # Database query performance
-EXPLAIN ANALYZE SELECT * FROM matchmaking_queue WHERE status = 'waiting';
-```
-
-## 🔮 Future Enhancements
-
-### Planned Features
-
-1. **Team Matchmaking** - Support for 2v2, 3v3, etc.
-2. **Skill-Based Decay** - ELO rating adjustment for inactivity
-3. **Geographic Matching** - Region-based player pairing
-4. **Preference System** - Player preferences and avoid lists
-5. **Tournament Integration** - Seamless tournament matchmaking
-
-### Performance Improvements
-
-1. **Machine Learning** - Predictive match quality scoring
-2. **Load Balancing** - Dynamic worker scaling
-3. **Caching** - Redis cluster with intelligent caching
-4. **Batch Processing** - Optimized bulk operations
-
-## 📚 References
-
-- [ELO Rating System](https://en.wikipedia.org/wiki/Elo_rating_system)
-- [Redis Data Structures](https://redis.io/topics/data-types)
-- [Actix-Web Framework](https://actix.rs/)
-- [SQLx Async Database](https://github.com/launchbadge/sqlx)
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+EXPLAIN ANALYZE SELECT * FROM matchmaking_queue WHERE status =

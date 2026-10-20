@@ -20,8 +20,9 @@ use storage::{
 
 pub use error::AntiCheatError;
 pub use storage::{
-    AlertRecord as OracleAlert, AnalyticsTotals as OracleAnalytics, DataFeed as OracleDataFeed,
-    DetectionRule as OracleDetectionRule, FeedReading as OracleFeedReading,
+    AlertRecord as OracleAlert, AnalyticsTotals as OracleAnalytics, AttestationRecord,
+    DataFeed as OracleDataFeed, DetectionRule as OracleDetectionRule,
+    FeedReading as OracleFeedReading,
     GovernanceProposal as OracleProposal, MonitoringState as OracleMonitoringState,
     OracleConfig as OracleConfiguration, OracleHealth as OracleHealthState,
 };
@@ -528,6 +529,109 @@ impl AntiCheatOracle {
             .get(&DataKey::FeedReading(feed_id, seq))
     }
 
+    pub fn submit_attestation(
+        env: Env,
+        oracle: Address,
+        player: Address,
+        match_id: u64,
+        domain: String,
+        severity: u32,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> Result<(), AntiCheatError> {
+        oracle.require_auth();
+        Self::require_oracle(&env, &oracle)?;
+        Self::check_not_paused(&env)?;
+
+        if severity == 0 || severity > 3 {
+            return Err(AntiCheatError::InvalidSeverity);
+        }
+        if domain.len() == 0 || domain.len() > 64 {
+            return Err(AntiCheatError::InvalidAttestationDomain);
+        }
+
+        let config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleConfig)
+            .ok_or(AntiCheatError::NotInitialized)?;
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
+            return Err(AntiCheatError::AttestationExpired);
+        }
+        if issued_at > now
+            || expires_at <= issued_at
+            || expires_at.saturating_sub(issued_at) > config.max_staleness_secs
+        {
+            return Err(AntiCheatError::InvalidAttestationWindow);
+        }
+        if now.saturating_sub(issued_at) > config.max_staleness_secs {
+            return Err(AntiCheatError::StaleReading);
+        }
+
+        let key = DataKey::Attestation(player.clone(), match_id, domain.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(AntiCheatError::AttestationAlreadyUsed);
+        }
+        let penalty = match severity {
+            1 => PENALTY_LOW,
+            2 => PENALTY_MEDIUM,
+            3 => PENALTY_HIGH,
+            _ => return Err(AntiCheatError::InvalidSeverity),
+        };
+        let record = AttestationRecord {
+            oracle: oracle.clone(),
+            player: player.clone(),
+            match_id,
+            domain: domain.clone(),
+            severity,
+            penalty_applied: penalty,
+            issued_at,
+            expires_at,
+        };
+        env.storage().persistent().set(&key, &record);
+        env.storage().persistent().set(
+            &DataKey::Confirmation(player.clone(), match_id),
+            &AntiCheatConfirmation {
+                player: player.clone(),
+                match_id,
+                severity,
+                penalty_applied: penalty,
+                timestamp: now,
+                oracle: oracle.clone(),
+                feed_id: 0,
+                alert_id: 0,
+            },
+        );
+        Self::apply_reputation_penalty(&env, &player, match_id, penalty);
+
+        let mut analytics = Self::get_analytics_totals(&env);
+        analytics.total_confirmations += 1;
+        analytics.last_updated = now;
+        env.storage()
+            .persistent()
+            .set(&DataKey::AnalyticsTotals, &analytics);
+        anticheat_events::emit_anticheat_flag(
+            &env, &player, match_id, severity, penalty, &oracle, now,
+        );
+        env.events().publish(
+            (soroban_sdk::symbol_short!("ATTEST"), player.clone(), match_id),
+            (oracle, domain, severity, penalty, issued_at, expires_at),
+        );
+        Ok(())
+    }
+
+    pub fn get_attestation(
+        env: Env,
+        player: Address,
+        match_id: u64,
+        domain: String,
+    ) -> Option<AttestationRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Attestation(player, match_id, domain))
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     // BACKWARD-COMPATIBLE FLAG SUBMISSION (v1 API)
     // ══════════════════════════════════════════════════════════════════════════
@@ -558,6 +662,32 @@ impl AntiCheatOracle {
         };
 
         let timestamp = env.ledger().timestamp();
+        let config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleConfig)
+            .ok_or(AntiCheatError::NotInitialized)?;
+        let domain = String::from_str(&env, "legacy");
+        let attestation_key = DataKey::Attestation(player.clone(), match_id, domain.clone());
+        if env.storage().persistent().has(&attestation_key) {
+            return Err(AntiCheatError::AttestationAlreadyUsed);
+        }
+        let expires_at = timestamp
+            .checked_add(config.max_staleness_secs)
+            .ok_or(AntiCheatError::ArithmeticOverflow)?;
+        env.storage().persistent().set(
+            &attestation_key,
+            &AttestationRecord {
+                oracle: oracle.clone(),
+                player: player.clone(),
+                match_id,
+                domain,
+                severity,
+                penalty_applied: penalty,
+                issued_at: timestamp,
+                expires_at,
+            },
+        );
         let confirmation = AntiCheatConfirmation {
             player: player.clone(),
             match_id,

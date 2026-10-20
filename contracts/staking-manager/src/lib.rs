@@ -21,7 +21,7 @@ use flexible_rewards::{calc_pending as calc_flexible_pending, early_exit_penalty
 pub use flexible_rewards::{FlexiblePosition, RewardPool};
 use validator_penalty::ValidatorPenaltyManager;
 
-use lp_incentives::{calc_fee_share, calc_il_protection, calc_lp_rewards, dynamic_rate};
+use lp_incentives::{calc_fee_share, calc_il_protection, dynamic_rate};
 pub use lp_incentives::{LpPerformanceRecord, LpPoolConfig, LpPosition};
 
 pub use voting_escrow::VotingEscrowLock;
@@ -39,6 +39,9 @@ pub enum DataKey {
     TournamentContract,
     DisputeContract,
     Stake(BytesN<32>, Address),
+    StakeDisputeHold(BytesN<32>, Address),
+    StakeTerminal(BytesN<32>, Address),
+    StakeSlashDecision(BytesN<32>),
     TournamentInfo(BytesN<32>),
     UserStakeInfo(Address),
     // Reward staking (general, non-tournament)
@@ -74,6 +77,12 @@ pub enum DataKey {
     LpPosition(Address, u32),
     LpUserPools(Address),
     LpHistory(Address, u32),
+    LpRewardReserve(u32),
+    LpRewardAccumulator(u32),
+    LpRewardLastTimestamp(u32),
+    LpRewardLiability(u32),
+    LpRewardEmissionRemainder(u32),
+    LpRewardDebt(Address, u32),
     // Time-lock voting escrow (#912)
     VotingEscrowLock(Address),
     // Governance signers for 2-of-N slashing multi-sig (#1061)
@@ -99,6 +108,15 @@ pub enum TournamentState {
     Cancelled = 3,
 }
 
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum StakeTerminalState {
+    Active = 0,
+    Withdrawn = 1,
+    Slashed = 2,
+}
+
 /// Tier unlocked by staking amount (used for premium features & governance weight)
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -120,6 +138,18 @@ pub struct StakeInfo {
     pub staked_at: u64,
     pub is_locked: bool,
     pub can_withdraw: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakeSlashDecision {
+    pub decision_id: BytesN<32>,
+    pub user: Address,
+    pub tournament_id: BytesN<32>,
+    pub amount: i128,
+    pub approved_by: Address,
+    pub recorded_at: u64,
+    pub executed: bool,
 }
 
 #[contracttype]
@@ -619,6 +649,17 @@ impl StakingManager {
             .persistent()
             .get(&DataKey::TournamentInfo(tournament_id.clone()))
             .expect("tournament not found");
+        if state > TournamentState::Cancelled as u32
+            || info.state == TournamentState::Completed as u32
+            || info.state == TournamentState::Cancelled as u32
+            || (info.state == TournamentState::NotStarted as u32
+                && state != TournamentState::Active as u32
+                && state != TournamentState::Cancelled as u32)
+            || (info.state == TournamentState::Active as u32
+                && state == TournamentState::NotStarted as u32)
+        {
+            panic!("invalid tournament state transition");
+        }
         info.state = state;
         if state == TournamentState::Completed as u32 || state == TournamentState::Cancelled as u32
         {
@@ -672,6 +713,10 @@ impl StakingManager {
                 can_withdraw: false,
             },
         );
+        env.storage().persistent().set(
+            &DataKey::StakeTerminal(tournament_id.clone(), user.clone()),
+            &(StakeTerminalState::Active as u32),
+        );
         env.storage()
             .persistent()
             .extend_ttl(&stake_key, min_ttl, target_ttl);
@@ -700,8 +745,26 @@ impl StakingManager {
             .persistent()
             .get(&stake_key)
             .expect("no stake");
-        if !info.can_withdraw {
-            panic!("stake not withdrawable");
+        let tournament: TournamentInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TournamentInfo(tournament_id.clone()))
+            .expect("tournament not found");
+        if tournament.state != TournamentState::Completed as u32
+            && tournament.state != TournamentState::Cancelled as u32
+        {
+            panic!("tournament has not reached a terminal state");
+        }
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::StakeDisputeHold(
+                tournament_id.clone(),
+                user.clone(),
+            ))
+            .unwrap_or(false)
+        {
+            panic!("stake is held for dispute");
         }
         token::Client::new(&env, &Self::get_ax_token(env.clone())).transfer(
             &env.current_contract_address(),
@@ -709,6 +772,17 @@ impl StakingManager {
             &info.amount,
         );
         env.storage().persistent().remove(&stake_key);
+        env.storage().persistent().set(
+            &DataKey::StakeTerminal(tournament_id.clone(), user.clone()),
+            &(StakeTerminalState::Withdrawn as u32),
+        );
+        let mut tournament = tournament;
+        tournament.total_staked -= info.amount;
+        tournament.participant_count = tournament.participant_count.saturating_sub(1);
+        env.storage().persistent().set(
+            &DataKey::TournamentInfo(tournament_id.clone()),
+            &tournament,
+        );
         Self::update_user_stake_info(&env, &user, -info.amount, 0, -1, 1);
         events::emit_withdrawn(&env, &user, &tournament_id, info.amount);
     }
@@ -719,9 +793,15 @@ impl StakingManager {
         tournament_id: BytesN<32>,
         amount: i128,
         slashed_by: Address,
+        decision_id: BytesN<32>,
     ) {
         Self::require_not_paused(&env);
+        slashed_by.require_auth();
         Self::require_dispute_contract_or_admin(&env, &slashed_by);
+        let decision_key = DataKey::StakeSlashDecision(decision_id.clone());
+        if env.storage().persistent().has(&decision_key) {
+            panic!("slash decision already used");
+        }
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -734,6 +814,15 @@ impl StakingManager {
         if amount > info.amount {
             panic!("slash exceeds stake");
         }
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::StakeTerminal(tournament_id.clone(), user.clone()))
+            .unwrap_or(StakeTerminalState::Active as u32)
+            != StakeTerminalState::Active as u32
+        {
+            panic!("stake is terminal");
+        }
         let treasury: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         token::Client::new(&env, &Self::get_ax_token(env.clone())).transfer(
             &env.current_contract_address(),
@@ -743,6 +832,10 @@ impl StakingManager {
         info.amount -= amount;
         if info.amount == 0 {
             env.storage().persistent().remove(&stake_key);
+            env.storage().persistent().set(
+                &DataKey::StakeTerminal(tournament_id.clone(), user.clone()),
+                &(StakeTerminalState::Slashed as u32),
+            );
         } else {
             env.storage().persistent().set(&stake_key, &info);
         }
@@ -758,17 +851,90 @@ impl StakingManager {
         env.storage()
             .persistent()
             .set(&DataKey::TournamentInfo(tournament_id.clone()), &t);
-        Self::update_user_stake_info(&env, &user, 0, amount, 0, 0);
+        Self::update_user_stake_info(
+            &env,
+            &user,
+            -amount,
+            amount,
+            if info.amount == 0 { -1 } else { 0 },
+            0,
+        );
+        env.storage().persistent().set(
+            &decision_key,
+            &StakeSlashDecision {
+                decision_id: decision_id.clone(),
+                user: user.clone(),
+                tournament_id: tournament_id.clone(),
+                amount,
+                approved_by: slashed_by.clone(),
+                recorded_at: env.ledger().timestamp(),
+                executed: true,
+            },
+        );
+        env.events().publish(
+            (soroban_sdk::symbol_short!("SLASH_DEC"), decision_id),
+            (user.clone(), tournament_id.clone(), amount, slashed_by.clone()),
+        );
         events::emit_slashed(&env, &user, &tournament_id, amount, &slashed_by);
+    }
+
+    pub fn get_stake_slash_decision(env: Env, decision_id: BytesN<32>) -> Option<StakeSlashDecision> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::StakeSlashDecision(decision_id))
+    }
+
+    pub fn set_stake_dispute_hold(
+        env: Env,
+        caller: Address,
+        user: Address,
+        tournament_id: BytesN<32>,
+        held: bool,
+    ) {
+        caller.require_auth();
+        Self::require_dispute_contract_or_admin(&env, &caller);
+        let stake_key = DataKey::Stake(tournament_id.clone(), user.clone());
+        if !env.storage().persistent().has(&stake_key) {
+            panic!("no active stake");
+        }
+        env.storage()
+            .persistent()
+            .set(
+                &DataKey::StakeDisputeHold(tournament_id.clone(), user.clone()),
+                &held,
+            );
+        env.events().publish(
+            (soroban_sdk::symbol_short!("STAKE_HOLD"), caller, tournament_id),
+            (user, held, env.ledger().timestamp()),
+        );
+    }
+
+    pub fn get_stake_terminal_state(
+        env: Env,
+        user: Address,
+        tournament_id: BytesN<32>,
+    ) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::StakeTerminal(tournament_id, user))
+            .unwrap_or(StakeTerminalState::Active as u32)
     }
 
     // ── Views ────────────────────────────────────────────────────────────────
 
     pub fn get_stake(env: Env, user: Address, tournament_id: BytesN<32>) -> StakeInfo {
-        env.storage()
+        let mut stake: StakeInfo = env
+            .storage()
             .persistent()
             .get(&DataKey::Stake(tournament_id, user))
-            .expect("stake not found")
+            .expect("stake not found");
+        stake.can_withdraw = Self::can_withdraw(
+            env.clone(),
+            stake.user.clone(),
+            stake.tournament_id.clone(),
+        );
+        stake.is_locked = !stake.can_withdraw;
+        stake
     }
 
     pub fn get_tournament_info(env: Env, tournament_id: BytesN<32>) -> TournamentInfo {
@@ -801,11 +967,29 @@ impl StakingManager {
     }
 
     pub fn can_withdraw(env: Env, user: Address, tournament_id: BytesN<32>) -> bool {
-        env.storage()
+        let stake_key = DataKey::Stake(tournament_id.clone(), user.clone());
+        let has_active_stake = env.storage().persistent().has(&stake_key)
+            && env
+                .storage()
+                .persistent()
+                .get::<DataKey, u32>(&DataKey::StakeTerminal(tournament_id.clone(), user.clone()))
+                .unwrap_or(StakeTerminalState::Active as u32)
+                == StakeTerminalState::Active as u32;
+        let is_terminal = env.storage()
             .persistent()
-            .get::<DataKey, StakeInfo>(&DataKey::Stake(tournament_id, user))
-            .map(|s| s.can_withdraw)
-            .unwrap_or(false)
+            .get::<DataKey, TournamentInfo>(&DataKey::TournamentInfo(tournament_id.clone()))
+            .map(|t| {
+                t.state == TournamentState::Completed as u32
+                    || t.state == TournamentState::Cancelled as u32
+            })
+            .unwrap_or(false);
+        has_active_stake
+            && is_terminal
+            && !env
+                .storage()
+                .persistent()
+                .get::<DataKey, bool>(&DataKey::StakeDisputeHold(tournament_id, user))
+                .unwrap_or(false)
     }
 
     pub fn get_admin(env: Env) -> Address {
@@ -1597,6 +1781,18 @@ impl StakingManager {
         env.storage()
             .instance()
             .set(&DataKey::LpPoolCounter, &(id + 1));
+        env.storage().instance().set(&DataKey::LpRewardReserve(id), &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardAccumulator(id), &0i128);
+        env.storage().instance().set(
+            &DataKey::LpRewardLastTimestamp(id),
+            &env.ledger().timestamp(),
+        );
+        env.storage().instance().set(&DataKey::LpRewardLiability(id), &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardEmissionRemainder(id), &0i128);
 
         events::emit_lp_pool_created(&env, id, reward_rate_bps, il_protection_bps);
         id
@@ -1613,6 +1809,7 @@ impl StakingManager {
             panic!("reward rate exceeds 100%");
         }
         let mut pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
         let old = pool.reward_rate_bps;
         pool.reward_rate_bps = new_rate_bps;
         env.storage()
@@ -1635,7 +1832,11 @@ impl StakingManager {
         min_rate_bps: u32,
     ) {
         Self::require_admin(&env);
+        if target_liquidity <= 0 || base_rate_bps > 10_000 || min_rate_bps > base_rate_bps {
+            panic!("invalid dynamic LP reward rate configuration");
+        }
         let mut pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
         let old = pool.reward_rate_bps;
         let new_rate = dynamic_rate(
             pool.total_liquidity,
@@ -1680,6 +1881,7 @@ impl StakingManager {
         }
 
         let mut pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
         if !pool.active {
             panic!("LP pool not active");
         }
@@ -1698,12 +1900,22 @@ impl StakingManager {
         let position =
             if let Some(mut pos) = env.storage().persistent().get::<DataKey, LpPosition>(&key) {
                 // Snapshot accrued rewards before topping up
-                pos.pending_rewards +=
-                    calc_lp_rewards(&pos, pool.reward_rate_bps, pool.total_liquidity, now);
+                let debt_key = DataKey::LpRewardDebt(user.clone(), pool_id);
+                let debt: i128 = env.storage().persistent().get(&debt_key).unwrap_or(0);
+                let accumulator: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::LpRewardAccumulator(pool_id))
+                    .unwrap_or(0);
+                pos.pending_rewards += Self::lp_position_accrual(&pos, debt, accumulator);
                 pos.last_reward_ts = now;
                 // Update fee debt to current cumulative so prior fees aren't double-counted
                 pos.fee_debt = pool.cumulative_fees;
                 pos.amount += amount;
+                env.storage().persistent().set(
+                    &debt_key,
+                    &(pos.amount * accumulator / Self::LP_REWARD_SCALE),
+                );
                 // Overwrite entry prices only if caller provided new ones
                 if entry_price_a > 0 {
                     pos.entry_price_a = entry_price_a;
@@ -1713,6 +1925,15 @@ impl StakingManager {
                 }
                 pos
             } else {
+                let accumulator: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::LpRewardAccumulator(pool_id))
+                    .unwrap_or(0);
+                env.storage().persistent().set(
+                    &DataKey::LpRewardDebt(user.clone(), pool_id),
+                    &(amount * accumulator / Self::LP_REWARD_SCALE),
+                );
                 LpPosition {
                     user: user.clone(),
                     pool_id,
@@ -1757,6 +1978,7 @@ impl StakingManager {
         user.require_auth();
 
         let mut pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
         let key = DataKey::LpPosition(user.clone(), pool_id);
         let pos: LpPosition = env
             .storage()
@@ -1765,17 +1987,32 @@ impl StakingManager {
             .expect("no LP position found");
 
         let now = env.ledger().timestamp();
-        let reward_pool: i128 = env
+        let reward_reserve: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::RewardPool)
+            .get(&DataKey::LpRewardReserve(pool_id))
+            .unwrap_or(0);
+        let reward_liability: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardLiability(pool_id))
+            .unwrap_or(0);
+        let reward_accumulator: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardAccumulator(pool_id))
+            .unwrap_or(0);
+        let reward_debt: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LpRewardDebt(user.clone(), pool_id))
             .unwrap_or(0);
 
         // 1. Time-based rewards
-        let accrued_rewards =
-            calc_lp_rewards(&pos, pool.reward_rate_bps, pool.total_liquidity, now)
-                + pos.pending_rewards;
-        let reward_payout = accrued_rewards.max(0).min(reward_pool);
+        let accrued_rewards = Self::lp_position_accrual(&pos, reward_debt, reward_accumulator)
+            .saturating_add(pos.pending_rewards)
+            .max(0);
+        let reward_payout = accrued_rewards.min(reward_reserve).min(reward_liability);
 
         // 2. Fee share (criterion #4)
         let fee_share = calc_fee_share(&pos, &pool).min(pool.fee_reserve);
@@ -1796,7 +2033,11 @@ impl StakingManager {
             client.transfer(&contract_addr, &user, &reward_payout);
             env.storage()
                 .instance()
-                .set(&DataKey::RewardPool, &(reward_pool - reward_payout));
+                .set(&DataKey::LpRewardReserve(pool_id), &(reward_reserve - reward_payout));
+            env.storage().instance().set(
+                &DataKey::LpRewardLiability(pool_id),
+                &(reward_liability - reward_payout),
+            );
         }
 
         // Pay fees from fee reserve
@@ -1812,11 +2053,17 @@ impl StakingManager {
             events::emit_lp_il_protection_paid(&env, &user, pool_id, il_payout);
         }
 
-        pool.total_liquidity = (pool.total_liquidity - pos.amount).max(0);
+        pool.total_liquidity = pool
+            .total_liquidity
+            .checked_sub(pos.amount)
+            .expect("LP liquidity accounting underflow");
         env.storage()
             .persistent()
             .set(&DataKey::LpPool(pool_id), &pool);
         env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LpRewardDebt(user.clone(), pool_id));
 
         // Record history (criterion #5)
         Self::push_lp_history(
@@ -1841,12 +2088,69 @@ impl StakingManager {
         );
     }
 
+    pub fn emergency_exit_lp(env: Env, user: Address, pool_id: u32) {
+        user.require_auth();
+        let mut pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
+        let position_key = DataKey::LpPosition(user.clone(), pool_id);
+        let position: LpPosition = env
+            .storage()
+            .persistent()
+            .get(&position_key)
+            .expect("no LP position found");
+        let accumulator: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardAccumulator(pool_id))
+            .unwrap_or(0);
+        let debt: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LpRewardDebt(user.clone(), pool_id))
+            .unwrap_or(0);
+        let accrued = Self::lp_position_accrual(&position, debt, accumulator)
+            .saturating_add(position.pending_rewards)
+            .max(0);
+        let liability: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardLiability(pool_id))
+            .unwrap_or(0);
+        env.storage().instance().set(
+            &DataKey::LpRewardLiability(pool_id),
+            &(liability - accrued.min(liability)),
+        );
+
+        token::Client::new(&env, &Self::get_ax_token(env.clone())).transfer(
+            &env.current_contract_address(),
+            &user,
+            &position.amount,
+        );
+        pool.total_liquidity = pool
+            .total_liquidity
+            .checked_sub(position.amount)
+            .expect("LP liquidity accounting underflow");
+        env.storage()
+            .persistent()
+            .set(&DataKey::LpPool(pool_id), &pool);
+        env.storage().persistent().remove(&position_key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LpRewardDebt(user.clone(), pool_id));
+        Self::push_lp_history(&env, &user, pool_id, env.ledger().timestamp(), -position.amount, 0, 0, 0);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("LP_EMERG_EXIT"), user.clone(), pool_id),
+            (position.amount, accrued),
+        );
+    }
+
     /// Claim accrued LP rewards and fee-share without removing liquidity.
     pub fn claim_lp_rewards(env: Env, user: Address, pool_id: u32) -> (i128, i128) {
         Self::require_not_paused(&env);
         user.require_auth();
 
         let mut pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
         let key = DataKey::LpPosition(user.clone(), pool_id);
         let mut pos: LpPosition = env
             .storage()
@@ -1855,16 +2159,32 @@ impl StakingManager {
             .expect("no LP position found");
 
         let now = env.ledger().timestamp();
-        let reward_pool: i128 = env
+        let reward_reserve: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::RewardPool)
+            .get(&DataKey::LpRewardReserve(pool_id))
+            .unwrap_or(0);
+        let reward_liability: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardLiability(pool_id))
+            .unwrap_or(0);
+        let reward_accumulator: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardAccumulator(pool_id))
+            .unwrap_or(0);
+        let reward_debt: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LpRewardDebt(user.clone(), pool_id))
             .unwrap_or(0);
 
         // Time-based rewards
-        let accrued = calc_lp_rewards(&pos, pool.reward_rate_bps, pool.total_liquidity, now)
-            + pos.pending_rewards;
-        let reward_payout = accrued.max(0).min(reward_pool);
+        let accrued = Self::lp_position_accrual(&pos, reward_debt, reward_accumulator)
+            .saturating_add(pos.pending_rewards)
+            .max(0);
+        let reward_payout = accrued.min(reward_reserve).min(reward_liability);
 
         // Fee share
         let fee_share = calc_fee_share(&pos, &pool).min(pool.fee_reserve);
@@ -1881,7 +2201,11 @@ impl StakingManager {
             client.transfer(&contract_addr, &user, &reward_payout);
             env.storage()
                 .instance()
-                .set(&DataKey::RewardPool, &(reward_pool - reward_payout));
+                .set(&DataKey::LpRewardReserve(pool_id), &(reward_reserve - reward_payout));
+            env.storage().instance().set(
+                &DataKey::LpRewardLiability(pool_id),
+                &(reward_liability - reward_payout),
+            );
         }
         if fee_share > 0 {
             client.transfer(&contract_addr, &user, &fee_share);
@@ -1889,9 +2213,13 @@ impl StakingManager {
         }
 
         // Reset position bookkeeping
-        pos.pending_rewards = 0;
+        pos.pending_rewards = accrued - reward_payout;
         pos.last_reward_ts = now;
         pos.fee_debt = pool.cumulative_fees;
+        env.storage().persistent().set(
+            &DataKey::LpRewardDebt(user.clone(), pool_id),
+            &(pos.amount * reward_accumulator / Self::LP_REWARD_SCALE),
+        );
         env.storage().persistent().set(&key, &pos);
         env.storage()
             .persistent()
@@ -1930,6 +2258,37 @@ impl StakingManager {
             .set(&DataKey::LpPool(pool_id), &pool);
 
         events::emit_lp_fee_deposited(&env, pool_id, amount, pool.cumulative_fees);
+    }
+
+    pub fn fund_lp_rewards(env: Env, funder: Address, pool_id: u32, amount: i128) {
+        Self::require_not_paused(&env);
+        funder.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let pool = Self::load_lp_pool(&env, pool_id);
+        Self::sync_lp_rewards(&env, pool_id, &pool);
+        let token_address = Self::get_ax_token(env.clone());
+        token::Client::new(&env, &token_address).transfer(
+            &funder,
+            &env.current_contract_address(),
+            &amount,
+        );
+        let reserve: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardReserve(pool_id))
+            .unwrap_or(0);
+        let new_reserve = reserve
+            .checked_add(amount)
+            .expect("LP reward reserve overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardReserve(pool_id), &new_reserve);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("LP_REWARD_FUND"), pool_id),
+            (funder, amount, new_reserve),
+        );
     }
 
     // ── Admin: push off-chain performance snapshot ────────────────────────────
@@ -1992,16 +2351,47 @@ impl StakingManager {
     pub fn pending_lp_rewards(env: Env, user: Address, pool_id: u32) -> i128 {
         let pool = Self::load_lp_pool(&env, pool_id);
         let now = env.ledger().timestamp();
+        let (accumulator, liability, _) = Self::lp_reward_state_at(&env, pool_id, &pool, now);
+        let reserve: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardReserve(pool_id))
+            .unwrap_or(0);
         if let Some(pos) = env
             .storage()
             .persistent()
             .get::<DataKey, LpPosition>(&DataKey::LpPosition(user, pool_id))
         {
-            calc_lp_rewards(&pos, pool.reward_rate_bps, pool.total_liquidity, now)
-                + pos.pending_rewards
+            let debt: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LpRewardDebt(user, pool_id))
+                .unwrap_or(0);
+            Self::lp_position_accrual(&pos, debt, accumulator)
+                .saturating_add(pos.pending_rewards)
+                .min(liability)
+                .min(reserve)
         } else {
             0
         }
+    }
+
+    /// Returns funded reserve and current liabilities; per-position fixed-point
+    /// rounding is bounded to less than one smallest token unit per position.
+    pub fn lp_reward_accounting(env: Env, pool_id: u32) -> (i128, i128) {
+        let pool = Self::load_lp_pool(&env, pool_id);
+        let reserve: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardReserve(pool_id))
+            .unwrap_or(0);
+        let (_, liability, _) = Self::lp_reward_state_at(
+            &env,
+            pool_id,
+            &pool,
+            env.ledger().timestamp(),
+        );
+        (reserve, liability)
     }
 
     /// Pending fee-share for an LP.
@@ -2034,6 +2424,101 @@ impl StakingManager {
     }
 
     // ── Private LP helpers ────────────────────────────────────────────────────
+
+    const LP_REWARD_SCALE: i128 = 1_000_000_000_000_000_000;
+
+    fn lp_position_accrual(pos: &LpPosition, debt: i128, accumulator: i128) -> i128 {
+        let accumulated = pos
+            .amount
+            .checked_mul(accumulator)
+            .expect("LP reward calculation overflow")
+            / Self::LP_REWARD_SCALE;
+        accumulated.saturating_sub(debt)
+    }
+
+    fn lp_reward_state_at(
+        env: &Env,
+        pool_id: u32,
+        pool: &LpPoolConfig,
+        now: u64,
+    ) -> (i128, i128, i128) {
+        let accumulator: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardAccumulator(pool_id))
+            .unwrap_or(0);
+        let liability: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardLiability(pool_id))
+            .unwrap_or(0);
+        let reserve: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardReserve(pool_id))
+            .unwrap_or(0);
+        let remainder: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardEmissionRemainder(pool_id))
+            .unwrap_or(0);
+        let last_timestamp: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LpRewardLastTimestamp(pool_id))
+            .unwrap_or(now);
+        if pool.total_liquidity <= 0 || now <= last_timestamp || reserve <= liability {
+            return (accumulator, liability, remainder);
+        }
+
+        let elapsed = (now - last_timestamp) as i128;
+        let denominator = 31_536_000i128 * 10_000i128;
+        let numerator = pool
+            .total_liquidity
+            .checked_mul(pool.reward_rate_bps as i128)
+            .and_then(|value| value.checked_mul(elapsed))
+            .and_then(|value| value.checked_add(remainder))
+            .expect("LP reward calculation overflow");
+        let requested = numerator / denominator;
+        let available = reserve - liability;
+        let emission = requested.min(available);
+        let new_remainder = if requested > available {
+            0
+        } else {
+            numerator % denominator
+        };
+        let accumulator_delta = emission
+            .checked_mul(Self::LP_REWARD_SCALE)
+            .expect("LP reward accumulator overflow")
+            / pool.total_liquidity;
+        (
+            accumulator
+                .checked_add(accumulator_delta)
+                .expect("LP reward accumulator overflow"),
+            liability
+                .checked_add(emission)
+                .expect("LP reward liability overflow"),
+            new_remainder,
+        )
+    }
+
+    fn sync_lp_rewards(env: &Env, pool_id: u32, pool: &LpPoolConfig) {
+        let now = env.ledger().timestamp();
+        let (accumulator, liability, remainder) =
+            Self::lp_reward_state_at(env, pool_id, pool, now);
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardAccumulator(pool_id), &accumulator);
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardLiability(pool_id), &liability);
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardEmissionRemainder(pool_id), &remainder);
+        env.storage()
+            .instance()
+            .set(&DataKey::LpRewardLastTimestamp(pool_id), &now);
+    }
 
     fn load_lp_pool(env: &Env, pool_id: u32) -> LpPoolConfig {
         env.storage()

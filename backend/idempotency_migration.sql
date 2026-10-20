@@ -224,68 +224,60 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Apply trigger to configs table
-DROP TRIGGER IF EXISTS update_idempotency_config_updated_at ON idempotency_configs;
-CREATE TRIGGER update_idempotency_config_updated_at 
-    BEFORE UPDATE ON idempotency_configs 
-    FOR EACH ROW EXECUTE FUNCTION update_idempotency_config_updated_at();
+DROP TRIGGER IF EXISTS trigger_update_idempotency_config_updated_at ON idempotency_configs;
+CREATE TRIGGER trigger_update_idempotency_config_updated_at
+    BEFORE UPDATE ON idempotency_configs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_idempotency_config_updated_at();
 
--- Create Trigger for Request Logging
-CREATE OR REPLACE FUNCTION log_idempotency_request()
+-- Trigger to enforce idempotency key payload consistency.
+-- A key may only ever be bound to a single request_hash. Any attempt to reuse
+-- the same key with a different payload is rejected at the database boundary,
+-- which is what makes conflicting-payload rejection durable under concurrent
+-- workers (issue #106).
+CREATE OR REPLACE FUNCTION enforce_idempotency_key_payload_consistency()
 RETURNS TRIGGER AS $$
+DECLARE
+    existing_hash VARCHAR(64);
 BEGIN
-    -- Log the request when an idempotency key is first used
-    IF NEW.used_at IS NOT NULL AND OLD.used_at IS NULL THEN
-        INSERT INTO request_logs (
-            idempotency_key, 
-            method, 
-            path, 
-            response_status,
-            created_at
-        ) VALUES (
-            NEW.key,
-            NEW.request_method,
-            NEW.request_path,
-            NEW.response_status,
-            NEW.created_at
-        );
+    SELECT request_hash INTO existing_hash
+    FROM idempotency_keys
+    WHERE key = NEW.key
+      AND id <> NEW.id
+    LIMIT 1;
+
+    IF existing_hash IS NOT NULL AND existing_hash <> NEW.request_hash THEN
+        RAISE EXCEPTION 'idempotency key % already bound to a different request payload', NEW.key
+            USING ERRCODE = '23505';
     END IF;
-    
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- Apply trigger to idempotency keys
-DROP TRIGGER IF EXISTS log_idempotency_request ON idempotency_keys;
-CREATE TRIGGER log_idempotency_request 
-    AFTER UPDATE ON idempotency_keys 
-    FOR EACH ROW EXECUTE FUNCTION log_idempotency_request();
+DROP TRIGGER IF EXISTS trigger_enforce_idempotency_key_payload_consistency ON idempotency_keys;
+CREATE TRIGGER trigger_enforce_idempotency_key_payload_consistency
+    BEFORE INSERT OR UPDATE ON idempotency_keys
+    FOR EACH ROW
+    EXECUTE FUNCTION enforce_idempotency_key_payload_consistency();
 
--- Insert Default Configurations
-INSERT INTO idempotency_configs (route_pattern, enabled, ttl_seconds, max_response_size_kb) VALUES
-('/api/payments/create', true, 86400, 1024),
-('/api/payments/refund', true, 86400, 1024),
-('/api/wallets/deposit', true, 86400, 512),
-('/api/wallets/withdraw', true, 86400, 512),
-('/api/tournaments/join', true, 86400, 256),
-('/api/matchmaking/join', true, 3600, 256),  -- 1 hour TTL for matchmaking
-('/api/payments/create', true, 86400, 1024)
-ON CONFLICT (route_pattern) DO NOTHING;
+-- Trigger to record the first durable use of an idempotency key.
+-- used_at is set exactly once so repeated identical operations collapse to a
+-- single durable side effect even when requests race (issue #106).
+CREATE OR REPLACE FUNCTION mark_idempotency_key_used()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.used_at IS NULL AND OLD.used_at IS NULL THEN
+        NEW.used_at = NOW();
+    ELSIF OLD.used_at IS NOT NULL THEN
+        NEW.used_at = OLD.used_at;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
--- Create Comments for Documentation
-COMMENT ON TABLE idempotency_keys IS 'Stores idempotency keys and cached responses to prevent duplicate operations';
-COMMENT ON TABLE idempotency_configs IS 'Configuration for idempotency behavior per route';
-COMMENT ON TABLE request_logs IS 'Logs all requests for debugging and analytics';
-
-COMMENT ON COLUMN idempotency_keys.key IS 'Unique idempotency key provided by client';
-COMMENT ON COLUMN idempotency_keys.request_hash IS 'SHA256 hash of request method, path, headers, and body';
-COMMENT ON COLUMN idempotency_keys.response_status IS 'HTTP status code of cached response';
-COMMENT ON COLUMN idempotency_keys.response_headers IS 'JSON representation of response headers';
-COMMENT ON COLUMN idempotency_keys.response_body IS 'JSON representation of response body';
-COMMENT ON COLUMN idempotency_keys.expires_at IS 'When the key expires and can be cleaned up';
-COMMENT ON COLUMN idempotency_keys.used_at IS 'When the key was first used';
-
--- Create Partition for Request Logs (optional for high volume)
--- This would be useful if you expect very high request volumes
--- CREATE TABLE request_logs_y2024m01 PARTITION OF request_logs
--- FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+DROP TRIGGER IF EXISTS trigger_mark_idempotency_key_used ON idempotency_keys;
+CREATE TRIGGER trigger_mark_idempotency_key_used
+    BEFORE UPDATE ON idempotency_keys
+    FOR EACH ROW
+    EXECUTE FUNCTION mark_idempotency_key_used();

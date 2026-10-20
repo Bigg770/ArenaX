@@ -13,8 +13,78 @@ on:
         default: ""
 
 jobs:
+  rehearsal:
+    name: Testnet rehearsal
+    if: ${{ inputs.rehearsal }}
+    runs-on: ubuntu-latest
+    environment: testnet
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate rehearsal inputs
+        env:
+          NETWORK: ${{ inputs.network }}
+          RPC_URL: ${{ inputs.rpc_url }}
+          IDENTITY: ${{ inputs.identity }}
+          ADMIN_PUBLIC_KEY: ${{ inputs.admin_public_key }}
+          WASM_PATH: ${{ inputs.wasm_path }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          [ "$NETWORK" = "testnet" ] || fail "Rehearsal is restricted to testnet (got '$NETWORK')."
+          [ -n "$RPC_URL" ] || fail "rpc_url is required."
+          case "$RPC_URL" in
+            *testnet*) : ;;
+            *) fail "rpc_url must point at a testnet endpoint (got '$RPC_URL')." ;;
+          esac
+          [ -n "$IDENTITY" ] || fail "identity is required."
+          [ -n "$ADMIN_PUBLIC_KEY" ] || fail "admin_public_key is required."
+          [ -f "$WASM_PATH" ] || fail "wasm_path '$WASM_PATH' does not exist; build the contract first."
+
+      - name: Install Stellar CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh -s -- --version 21.5.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Configure testnet identity
+        env:
+          NETWORK: ${{ inputs.network }}
+          RPC_URL: ${{ inputs.rpc_url }}
+          IDENTITY: ${{ inputs.identity }}
+        run: |
+          set -euo pipefail
+          stellar network add "$NETWORK" --rpc-url "$RPC_URL" --network-passphrase "Test SDF Network ; September 2015" || true
+          if ! stellar keys address "$IDENTITY" >/dev/null 2>&1; then
+            stellar keys generate "$IDENTITY" --network "$NETWORK" --fund
+          fi
+
+      - name: Run testnet rehearsal
+        env:
+          NETWORK: ${{ inputs.network }}
+          RPC_URL: ${{ inputs.rpc_url }}
+          IDENTITY: ${{ inputs.identity }}
+          ADMIN_PUBLIC_KEY: ${{ inputs.admin_public_key }}
+          WASM_PATH: ${{ inputs.wasm_path }}
+          ARTIFACT_REPORT: ${{ github.workspace }}/rehearsal-artifacts/report.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$ARTIFACT_REPORT")"
+          ./scripts/deploy/rehearse.sh
+
+      - name: Upload rehearsal artifact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testnet-rehearsal-report
+          path: rehearsal-artifacts/
+          if-no-files-found: warn
+
   rollback:
     name: Roll back to previous slot
+    if: ${{ !inputs.rehearsal }}
     runs-on: ubuntu-latest
     environment: production
     steps:

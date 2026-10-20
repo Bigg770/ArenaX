@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE prize_pools\n            SET total_amount = total_amount + $1, updated_at = $2\n            WHERE tournament_id = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01d403d60dc1b880a69654e718e5c652eb3fb451881da51cabe92d0776b8db19"
+}
