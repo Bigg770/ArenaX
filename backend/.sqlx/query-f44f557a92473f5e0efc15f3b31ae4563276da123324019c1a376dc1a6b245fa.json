@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT game, game_mode,\n               AVG(EXTRACT(EPOCH FROM (matched_at - joined_at))::INTEGER)::INTEGER as avg_wait\n        FROM matchmaking_queue\n        WHERE status = $1\n          AND matched_at IS NOT NULL\n          AND joined_at >= $2\n        GROUP BY game, game_mode\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "game_mode",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "avg_wait",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "f44f557a92473f5e0efc15f3b31ae4563276da123324019c1a376dc1a6b245fa"
+}

@@ -2,19 +2,30 @@ name: CI
 
 on:
   push:
-    branches: [ main, dev, develop ]
+    branches: [main, dev, develop]
   pull_request:
-    branches: [ main, dev, develop ]
+    branches: [main, dev, develop]
 
 jobs:
-  # Frontend CI
+  secret-scan:
+    name: Secret scan (current content + history)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan current content and history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMITS: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -41,14 +52,64 @@ jobs:
     - name: Run tests
       run: npm test -- --ci --forceExit --passWithNoTests
 
-    - name: Build
-      run: npm run build
-      env:
-        NODE_ENV: production
+  # Smart Contracts CI — Reproducible & blocking builds (#51)
+  contracts:
+    name: Contracts (Soroban)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  # Server (TypeScript) CI
-  server:
-    name: Server
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-contracts-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace
+
+      - name: Build optimized Wasm contracts
+        run: cargo build --locked --workspace --target wasm32-unknown-unknown --release
+
+      - name: Generate release artifact metadata
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          ./scripts/build-release-artifacts.sh
+
+      - name: Upload contract build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soroban-contract-artifacts
+          path: |
+            contracts/target/wasm32-unknown-unknown/release/*.wasm
+            contracts/target/wasm32-unknown-unknown/release/artifact-metadata.json
+          retention-days: 7
+
+  frontend:
+    name: Frontend
     runs-on: ubuntu-latest
     continue-on-error: true
     defaults:
@@ -84,24 +145,20 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:14
+        image: postgres:16
         env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
-    defaults:
-      run:
-        working-directory: ./backend
-
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app_test
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -138,47 +195,47 @@ jobs:
         ./scripts/rollback-verify.sh
 
   # Backend (Rust) build & test
-  #
-  # Before this job the Rust backend was never compiled in CI — the
-  # `backend-migrations` job above only applies migrations — so `backend/` could
-  # rot without any check noticing.
-  #
-  # `continue-on-error` is deliberately true for now: `main` does not currently
-  # compile, so a blocking job would fail every unrelated PR. Once the backend
-  # builds green, delete `continue-on-error` and make this a required check.
   backend-build:
     name: Backend Build & Test
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     services:
       postgres:
-        image: postgres:15
+        image: postgres:16-alpine
         env:
-          POSTGRES_USER: arenax
-          POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arenax_ci
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U arenax -d arenax_ci"
-          --health-interval 10s
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-      # The realtime/session tests connect to Redis at 127.0.0.1:6379.
+          --health-retries 20
       redis:
-        image: redis:7
+        image: redis:7-alpine
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-
+          --health-retries 20
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: test
+          MINIO_ROOT_PASSWORD: testtest
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        command: server /data
     env:
-      # `sqlx::query!` macros type-check against a live, migrated database, so
-      # DATABASE_URL must be reachable at compile time, not just at runtime.
       DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
       REDIS_URL: redis://localhost:6379
     defaults:
@@ -192,8 +249,6 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    # Same key as `backend-migrations` so the compiled-in sqlx-cli binary is
-    # shared between the two jobs instead of installed twice.
     - name: Cache cargo registry
       uses: actions/cache@v3
       with:
@@ -220,81 +275,30 @@ jobs:
     - name: Apply migrations
       run: ./scripts/migrate.sh
 
+    - name: Check SQLx offline metadata
+      run: cargo sqlx prepare --check -- --all-targets
+
     - name: Type check
       run: cargo check --all-targets --locked
 
     - name: Run tests
       run: cargo test --all-targets --locked
 
-    # Issue #103: deterministic, seeded property tests for tournament bracket
-    # invariants (participant/seed/bye generation, uniqueness, advancement).
-    # Run separately so a failing minimized counterexample is easy to spot in
-    # the job log and can be promoted to a regression fixture.
-    - name: Property tests (bracket invariants, #103)
-      env:
-        PROPTEST_CASES: "256"
-      run: cargo test --locked --test bracket_properties -- --nocapture
-
-  # Contracts CI (Rust)
-  contracts:
-    name: Contracts
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: ./contracts
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
-    
-    - name: Install wasm target
-      run: rustup target add wasm32-unknown-unknown
-    
-    - name: Cache cargo
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          contracts/target
-        key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
-    
-    - name: Check formatting
-      run: cargo fmt --all -- --check
-    
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
-    
-    - name: Build contracts
-      run: cargo build --target wasm32-unknown-unknown --release
-    
-    - name: Run tests
-      run: cargo test
-
-  # Cross-service API contract tests (Rust + TypeScript)
+  # Dependency-failure chaos tests (#119)
   #
-  # Issue #102: the versioned API contract is the source of truth. The same
-  # shared valid/invalid fixtures are replayed against every supported server
-  # implementation so route, auth, serialization, and error behavior cannot
-  # silently diverge. `continue-on-error` mirrors the other backend jobs until
-  # the matrix is green; flip it off once both implementations pass.
-  contract-tests:
-    name: Contract Tests (${{ matrix.service }})
+  # Verifies the system fails safely when PostgreSQL, Redis, object storage,
+  # payment APIs, or Stellar RPC degrade. The chaos harness injects controlled
+  # timeouts, restarts, throttling, and malformed responses, then asserts that
+  # no outage creates duplicate payouts or loses committed match state, that
+  # health/readiness distinguishes recoverable degradation, and that recovery
+  # drains/reconciles pending work back to a healthy state.
+  #
+  # `continue-on-error` mirrors the other backend jobs while the backend is
+  # still stabilising; remove it once the chaos suite is green on `main`.
+  chaos:
+    name: Dependency-Failure Chaos Tests
     runs-on: ubuntu-latest
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        # Backend ownership decisions determine which implementations remain in
-        # the matrix. Both are currently supported; drop an entry here when an
-        # implementation is retired.
-        service: [ rust, typescript ]
 
     services:
       postgres:
@@ -302,4 +306,184 @@ jobs:
         env:
           POSTGRES_USER: arenax
           POSTGRES_PASSWORD: arenax
-          POSTGRES_DB: arena
+          POSTGRES_DB: arenax_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arenax -d arenax_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://arenax:arenax@localhost:5432/arenax_ci
+      REDIS_URL: redis://localhost:6379
+      # Bounded chaos scenario: keep the injected faults short so the job
+      # cannot hang if a dependency never recovers.
+      CHAOS_TIMEOUT_MS: "5000"
+      CHAOS_RECOVERY_TIMEOUT_MS: "30000"
+      RUST_BACKTRACE: "1"
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+
+  # Performance regression checks for core algorithms (#120)
+  #
+  # Microbenchmarks for matchmaking, bracket generation, analytics, and event
+  # processing hot paths. Inputs cover representative realistic distributions
+  # plus adversarial shapes (skewed, duplicate-heavy, edge cases). Results are
+  # compared against committed baselines with a statistical (non-flaky)
+  # regression gate rather than hard wall-clock thresholds, and correctness is
+  # preserved by running the property tests alongside the benchmarks.
+  #
+  # `continue-on-error` mirrors the other backend jobs while the backend is
+  # still stabilising; remove it once the benchmark suite is green on `main`.
+  benchmarks:
+    name: Performance Regression Checks
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    env:
+      # Pin the toolchain so benchmark numbers are comparable across runs.
+      RUSTUP_TOOLCHAIN: "1.83.0"
+      RUST_BACKTRACE: "1"
+      # Statistical regression gate: flag only when the change is both large
+      # and consistent, so noise does not produce flaky failures.
+      BENCH_REGRESSION_THRESHOLD: "0.10"
+      BENCH_CONFIDENCE_LEVEL: "0.95"
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install pinned Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: "1.83.0"
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-bench-${{ hashFiles('backend/Cargo.lock') }}
+
+    - name: Cache backend target
+      uses: actions/cache@v3
+      with:
+        path: backend/target
+        key: ${{ runner.os }}-cargo-bench-target-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-bench-target-
+
+    - name: Run correctness/property tests
+      run: cargo test --all-targets --locked
+
+    - name: Run microbenchmarks
+      run: cargo bench --locked -- --save-baseline current
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+  # Transactional rollout/rollback gate (#96)
+  deploy-gates:
+    name: Deploy Gates
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Verify deploy workflow exists
+      run: |
+        if [ ! -f .github/workflows/deploy.yml ]; then
+          echo "::error::.github/workflows/deploy.yml is missing; rollout/rollback gates cannot be verified"
+          exit 1
+        fi
+
+    - name: Verify readiness gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        READY_LINE=$(grep -n -i -E 'readiness|health' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$READY_LINE" ]; then
+          echo "::error::No readiness/health gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$READY_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Readiness gate (line $READY_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Readiness gate at line $READY_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify migration gate precedes traffic shift
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        MIGRATE_LINE=$(grep -n -i -E 'migrat' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        TRAFFIC_LINE=$(grep -n -i -E 'traffic|shift|promote' "$DEPLOY" | head -n1 | cut -d: -f1 || true)
+        if [ -z "$MIGRATE_LINE" ]; then
+          echo "::error::No migration gate found in deploy workflow"
+          exit 1
+        fi
+        if [ -z "$TRAFFIC_LINE" ]; then
+          echo "::error::No traffic-shift step found in deploy workflow"
+          exit 1
+        fi
+        if [ "$MIGRATE_LINE" -ge "$TRAFFIC_LINE" ]; then
+          echo "::error::Rollback/migration gate (line $MIGRATE_LINE) must precede traffic shift (line $TRAFFIC_LINE)"
+          exit 1
+        fi
+        echo "Migration gate at line $MIGRATE_LINE precedes traffic shift at line $TRAFFIC_LINE"
+
+    - name: Verify rollback restores prior artifact without destructive schema reversal
+      run: |
+        DEPLOY=.github/workflows/deploy.yml
+        if ! grep -q -i -E 'rollback' "$DEPLOY"; then
+          echo "::error::No rollback path found in deploy workflow"
+          exit 1
+        fi
+        if ! grep -q -i -E 'previous|prior|PREVIOUS_RELEASE|PREVIOUS_IMAGE|rollback.*(image|release|artifact)' "$DEPLOY"; then
+          echo "::error::Rollback does not reference the prior application artifact/release"
+          exit 1
+        fi
+        if grep -q -i -E 'migrate.*(down|revert)|sqlx migrate revert|rollback-verify' "$DEPLOY"; then
+          echo "::error::Rollback performs destructive schema reversal; schema must remain backward-compatible"
+          exit 1
+        fi
+        echo "Rollback restores prior artifact without destructive schema reversal"

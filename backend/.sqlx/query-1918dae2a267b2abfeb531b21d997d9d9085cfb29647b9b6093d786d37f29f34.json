@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n                tm.id as match_id,\n                tm.match_number,\n                tm.player1_id,\n                tm.player2_id,\n                tm.winner_id,\n                tm.player1_score,\n                tm.player2_score,\n                tm.status as match_status,\n                tm.scheduled_time,\n                tm.started_at,\n                tm.completed_at,\n                u1.username as player1_username,\n                u2.username as player2_username,\n                u1.display_name as player1_display_name,\n                u2.display_name as player2_display_name,\n                tp1.final_rank as player1_final_rank,\n                tp2.final_rank as player2_final_rank\n                FROM tournament_matches tm\n                LEFT JOIN users u1 ON tm.player1_id = u1.id\n                LEFT JOIN users u2 ON tm.player2_id = u2.id\n                LEFT JOIN tournament_participants tp1 ON tm.player1_id = tp1.user_id AND tm.tournament_id = tp1.tournament_id\n                LEFT JOIN tournament_participants tp2 ON tm.player2_id = tp2.user_id AND tm.tournament_id = tp2.tournament_id\n                WHERE tm.round_id = $1\n                ORDER BY tm.match_number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "match_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "player1_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "player2_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "winner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "player1_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "player2_score",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "match_status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "scheduled_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "player1_username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "player2_username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "player1_display_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "player2_display_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 15,
+        "name": "player1_final_rank",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 16,
+        "name": "player2_final_rank",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "1918dae2a267b2abfeb531b21d997d9d9085cfb29647b9b6093d786d37f29f34"
+}

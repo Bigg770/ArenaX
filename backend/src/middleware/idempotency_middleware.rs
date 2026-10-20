@@ -38,10 +38,14 @@ use std::future::Ready;
 use std::pin::Pin;
 use tracing::{error, info, warn};
 
+use crate::db::DbPool;
+
+#[derive(Clone)]
 pub struct IdempotencyMiddleware {
-    policy: IdempotencyPolicy,
-    redis_conn: ConnectionManager,
-    metrics: IdempotencyMetrics,
+    pub policy: IdempotencyPolicy,
+    pub redis_conn: Option<ConnectionManager>,
+    pub db_pool: Option<DbPool>,
+    pub metrics: IdempotencyMetrics,
 }
 
 impl IdempotencyMiddleware {
@@ -49,7 +53,8 @@ impl IdempotencyMiddleware {
     pub fn new(redis_conn: ConnectionManager, policy: IdempotencyPolicy) -> Self {
         Self {
             policy,
-            redis_conn,
+            redis_conn: Some(redis_conn),
+            db_pool: None,
             metrics: IdempotencyMetrics::new(),
         }
     }
@@ -57,6 +62,35 @@ impl IdempotencyMiddleware {
     /// Create idempotency middleware with default policy.
     pub fn with_default_policy(redis_conn: ConnectionManager) -> Self {
         Self::new(redis_conn, IdempotencyPolicy::default())
+    }
+
+    /// Create idempotency middleware with DbPool (for testing/compatibility).
+    pub fn default(db_pool: DbPool) -> Self {
+        Self {
+            policy: IdempotencyPolicy::default(),
+            redis_conn: None,
+            db_pool: Some(db_pool),
+            metrics: IdempotencyMetrics::new(),
+        }
+    }
+
+    pub fn generate_request_hash(&self, req: &HttpRequest, body: &[u8]) -> String {
+        Self::compute_request_hash(req, body, &self.policy)
+    }
+
+    pub fn extract_idempotency_key_from_headers(&self, headers: &actix_web::http::header::HeaderMap) -> Result<String, ApiError> {
+        let key_header = headers
+            .get(&self.policy.key_header_name)
+            .ok_or_else(|| ApiError::bad_request(format!("Missing {} header", self.policy.key_header_name)))?;
+        let key_str = key_header.to_str().map_err(|_| ApiError::bad_request("Invalid idempotency key format"))?;
+        if key_str.trim().is_empty() {
+            return Err(ApiError::bad_request("Empty idempotency key"));
+        }
+        Ok(key_str.to_string())
+    }
+
+    pub fn is_route_enabled(&self, path: &str) -> bool {
+        self.policy.enabled_routes.iter().any(|pattern| path.starts_with(pattern) || path == pattern)
     }
 
     /// Get reference to the metrics collector.
@@ -71,7 +105,7 @@ impl IdempotencyMiddleware {
 
     /// Extract Idempotency-Key header from request.
     /// Returns None if header is missing (allowed per spec).
-    fn extract_idempotency_key(req: &HttpRequest, policy: &IdempotencyPolicy) -> Option<String> {
+    pub fn extract_idempotency_key(req: &HttpRequest, policy: &IdempotencyPolicy) -> Option<String> {
         req.headers()
             .get(&policy.key_header_name)
             .and_then(|v| v.to_str().ok())
@@ -129,10 +163,13 @@ impl IdempotencyMiddleware {
     ) -> Result<Option<CachedResponse>, String> {
         let redis_key = Self::redis_cache_key(idempotency_key);
 
-        let mut conn = self.redis_conn.clone();
+        let mut conn = match self.redis_conn.clone() {
+            Some(conn) => conn,
+            None => return Ok(None),
+        };
         match redis::cmd("GET")
             .arg(&redis_key)
-            .query_async::<_, Option<String>>(&mut conn)
+            .query_async::<Option<String>>(&mut conn)
             .await
         {
             Ok(Some(json_str)) => {
@@ -178,13 +215,16 @@ impl IdempotencyMiddleware {
             ));
         }
 
-        let mut conn = self.redis_conn.clone();
+        let mut conn = match self.redis_conn.clone() {
+            Some(conn) => conn,
+            None => return Ok(()),
+        };
         match redis::cmd("SET")
             .arg(&redis_key)
             .arg(&json_value)
             .arg("EX")
             .arg(self.policy.ttl_seconds)
-            .query_async::<_, ()>(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
         {
             Ok(()) => {
@@ -285,18 +325,14 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         std::future::ready(Ok(IdempotencyService {
             service: std::rc::Rc::new(service),
-            policy: self.policy.clone(),
-            redis_conn: self.redis_conn.clone(),
-            metrics: self.metrics.clone(),
+            middleware: self.clone(),
         }))
     }
 }
 
 pub struct IdempotencyService<S> {
     service: std::rc::Rc<S>,
-    policy: IdempotencyPolicy,
-    redis_conn: ConnectionManager,
-    metrics: IdempotencyMetrics,
+    middleware: IdempotencyMiddleware,
 }
 
 impl<S, B> dev::Service<dev::ServiceRequest> for IdempotencyService<S>
@@ -315,10 +351,10 @@ where
 
     dev::forward_ready!(service);
 
-    fn call(&self, mut req: dev::ServiceRequest) -> Self::Future {
-        let policy = self.policy.clone();
-        let redis_conn = self.redis_conn.clone();
-        let metrics = self.metrics.clone();
+    fn call(&self, req: dev::ServiceRequest) -> Self::Future {
+        let middleware = self.middleware.clone();
+        let policy = middleware.policy.clone();
+        let metrics = middleware.metrics.clone();
         let svc = self.service.clone();
 
         Box::pin(async move {
@@ -345,8 +381,6 @@ where
             // Step 4: Compute request hash
             let request_hash =
                 IdempotencyMiddleware::compute_request_hash(req.request(), &body, &policy);
-
-            let middleware = IdempotencyMiddleware::new(redis_conn.clone(), policy.clone());
 
             // Step 5: Check for hash conflict (same key, different request)
             match middleware

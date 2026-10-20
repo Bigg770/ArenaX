@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO transaction_monitor (\n                id, operation, isolation_level, started_at, status, retry_count, metadata\n            ) VALUES ($1, $2, $3, $4, $5, $6, $7)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Varchar",
+        "Timestamptz",
+        {
+          "Custom": {
+            "name": "transaction_status",
+            "kind": {
+              "Enum": [
+                "started",
+                "completed",
+                "failed",
+                "retried",
+                "rolled_back"
+              ]
+            }
+          }
+        },
+        "Int4",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90bdfcbb21b962b2b690e571be27827610456807039faa91f964cd0b5026771d"
+}

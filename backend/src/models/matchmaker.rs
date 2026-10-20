@@ -41,34 +41,7 @@ impl From<String> for QueueStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct UserElo {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub game: String,
-    pub current_rating: i32,
-    pub peak_rating: i32,
-    pub wins: i32,
-    pub losses: i32,
-    pub draws: i32,
-    pub win_rate: f64,
-    pub win_streak: i32,
-    pub loss_streak: i32,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct EloHistory {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub game: String,
-    pub old_rating: i32,
-    pub new_rating: i32,
-    pub change_amount: i32,
-    pub match_id: Uuid,
-    pub created_at: DateTime<Utc>,
-}
+pub use crate::models::match_models::{EloHistory, UserElo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueEntry {

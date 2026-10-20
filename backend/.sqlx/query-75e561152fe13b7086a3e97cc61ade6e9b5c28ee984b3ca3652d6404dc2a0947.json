@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matchmaking_queue SET status = $1 WHERE user_id = $2 AND status = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "75e561152fe13b7086a3e97cc61ade6e9b5c28ee984b3ca3652d6404dc2a0947"
+}

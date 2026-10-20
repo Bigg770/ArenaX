@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO reputation_events (\n                    user_id, event_type, skill_delta, fair_play_delta, match_id\n                ) VALUES ($1, $2, $3, $4, $5)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Int4",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e896b937426f3aa4d51d1b6436071cd4659bcdbe6904350bf143ec88edded2e8"
+}

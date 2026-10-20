@@ -8,6 +8,19 @@
 //! Also wires `tracing` into Sentry (see [`init_sentry`]) so panics and
 //! `tracing::error!` calls are centralized instead of only living in local
 //! logs.
+//!
+//! ## Sampling & cardinality
+//!
+//! - Sampling is controlled by the standard `OTEL_TRACES_SAMPLER` /
+//!   `OTEL_TRACES_SAMPLER_ARG` env vars (default: `parentbased_always_on`).
+//!   Set `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with
+//!   `OTEL_TRACES_SAMPLER_ARG=0.1` to sample 10% of root traces in prod while
+//!   still honoring upstream sampling decisions propagated via `traceparent`.
+//! - Cardinality: resource attributes are limited to the low-cardinality set
+//!   below (`service.name`, `service.version`, `deployment.environment`,
+//!   `service.instance.id`). Never attach user IDs, request IDs, evidence
+//!   hashes, or other unbounded values as span/resource attributes — put them
+//!   on span *events* or logs instead so they don't explode the metric index.
 use std::env;
 use std::time::Duration;
 
@@ -15,7 +28,7 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
 use sentry::ClientInitGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -71,22 +84,21 @@ fn init_sentry() -> Option<ClientInitGuard> {
     let environment = env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
     let slack_webhook_url = env::var("SLACK_WEBHOOK_URL").ok().filter(|u| !u.is_empty());
 
-    let guard = sentry::init((
-        dsn,
-        sentry::ClientOptions::default()
-            .release(sentry::release_name!())
-            .environment(environment)
-            .max_breadcrumbs(10)
-            .attach_stacktrace(true)
-            .before_send(move |event| {
-                if event.level >= sentry::Level::Error {
-                    if let Some(webhook_url) = slack_webhook_url.clone() {
-                        notify_slack_on_critical_error(webhook_url, summarize_event(&event));
-                    }
-                }
-                Some(event)
-            }),
-    ));
+    let mut opts = sentry::ClientOptions::default();
+    opts.release = sentry::release_name!();
+    opts.environment = Some(environment.into());
+    opts.max_breadcrumbs = 10;
+    opts.attach_stacktrace = true;
+    opts.before_send = Some(std::sync::Arc::new(Box::new(move |event: sentry::protocol::Event<'static>| {
+        if event.level >= sentry::Level::Error {
+            if let Some(webhook_url) = slack_webhook_url.clone() {
+                notify_slack_on_critical_error(webhook_url, summarize_event(&event));
+            }
+        }
+        Some(event)
+    })));
+
+    let guard = sentry::init((dsn, opts));
 
     Some(guard)
 }
@@ -131,6 +143,53 @@ fn notify_slack_on_critical_error(webhook_url: String, summary: String) {
     });
 }
 
+/// Build the low-cardinality resource describing this service instance.
+///
+/// Only bounded attributes are attached here (see the module docs on
+/// cardinality). `service.instance.id` defaults to the hostname so multiple
+/// replicas are distinguishable without leaking anything sensitive.
+fn build_resource(service_name: String) -> Resource {
+    let service_version = env::var("OTEL_SERVICE_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let environment = env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
+    let instance_id = env::var("HOSTNAME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Resource::builder()
+        .with_attribute(KeyValue::new("service.name", service_name))
+        .with_attribute(KeyValue::new("service.version", service_version))
+        .with_attribute(KeyValue::new("deployment.environment", environment))
+        .with_attribute(KeyValue::new("service.instance.id", instance_id))
+        .build()
+}
+
+/// Resolve the sampler from the standard `OTEL_TRACES_SAMPLER` /
+/// `OTEL_TRACES_SAMPLER_ARG` env vars, defaulting to parent-based always-on
+/// so upstream sampling decisions propagated via `traceparent` are honored.
+fn build_sampler() -> Sampler {
+    let sampler = env::var("OTEL_TRACES_SAMPLER")
+        .unwrap_or_else(|_| "parentbased_always_on".to_string())
+        .to_ascii_lowercase();
+    let arg = env::var("OTEL_TRACES_SAMPLER_ARG")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok());
+
+    match sampler.as_str() {
+        "always_on" => Sampler::AlwaysOn,
+        "always_off" => Sampler::AlwaysOff,
+        "traceidratio" => Sampler::TraceIdRatioBased(arg.unwrap_or(1.0)),
+        "parentbased_always_off" => Sampler::ParentBased(Box::new(Sampler::AlwaysOff)),
+        "parentbased_traceidratio" => {
+            Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(arg.unwrap_or(1.0))))
+        }
+        _ => Sampler::ParentBased(Box::new(Sampler::AlwaysOn)),
+    }
+}
+
 /// Initialize structured logging plus (optionally) OpenTelemetry trace export.
 ///
 /// Set `OTEL_EXPORTER_OTLP_ENDPOINT` to point at a Jaeger or Datadog Agent
@@ -162,16 +221,11 @@ pub fn init_telemetry() -> TelemetryGuard {
 
         match exporter {
             Ok(exporter) => {
-                let resource = Resource::builder()
-                    .with_attribute(KeyValue::new("service.name", service_name))
-                    .with_attribute(KeyValue::new(
-                        "deployment.environment",
-                        env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()),
-                    ))
-                    .build();
+                let resource = build_resource(service_name);
 
                 let provider = SdkTracerProvider::builder()
                     .with_batch_exporter(exporter)
+                    .with_sampler(build_sampler())
                     .with_resource(resource)
                     .build();
 
@@ -179,60 +233,24 @@ pub fn init_telemetry() -> TelemetryGuard {
                 Some(provider)
             }
             Err(e) => {
-                eprintln!("Failed to build OTLP span exporter for {endpoint}: {e}");
+                eprintln!("Failed to build OTLP span exporter: {e}");
                 None
             }
         }
     });
 
-    let otel_layer = provider.as_ref().map(|provider| {
-        let tracer = provider.tracer("arenax-backend");
+    let otel_layer = provider.as_ref().map(|p| {
+        use opentelemetry::trace::TracerProvider as _;
+        let tracer = p.tracer("backend");
         tracing_opentelemetry::layer().with_tracer(tracer)
     });
 
-    // `LOG_FORMAT=json` emits structured JSON lines (with the current span's
-    // fields, e.g. `correlation_id`/`trace_id`) for ELK/Datadog ingestion.
-    let json_logs = std::env::var("LOG_FORMAT")
-        .map(|v| v.eq_ignore_ascii_case("json"))
-        .unwrap_or(false);
-    let (fmt_json, fmt_text) = if json_logs {
-        (
-            Some(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_current_span(true)
-                    .with_span_list(false),
-            ),
-            None,
-        )
-    } else {
-        (None, Some(tracing_subscriber::fmt::layer()))
-    };
-
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(fmt_json)
-        .with(fmt_text)
+        .with(tracing_subscriber::fmt::layer())
         .with(otel_layer)
         .with(sentry_layer)
         .init();
-
-    if provider.is_some() {
-        tracing::info!(
-            endpoint = otlp_endpoint.as_deref().unwrap_or(""),
-            "OpenTelemetry trace export enabled"
-        );
-    } else {
-        tracing::info!(
-            "OTEL_EXPORTER_OTLP_ENDPOINT not set (or exporter init failed) — tracing spans stay local only"
-        );
-    }
-
-    if sentry_guard.is_some() {
-        tracing::info!("Sentry error tracking enabled");
-    } else {
-        tracing::info!("SENTRY_DSN not set — panics and errors are not centralized in Sentry");
-    }
 
     TelemetryGuard {
         provider,
