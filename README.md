@@ -44,3 +44,8 @@ Retain a report per drill containing:
 - Cutover outcome and any follow-up actions
 
 A drill passes only when measured RTO and RPO are within the objectives above and application validation succeeds.
+
+## Handsoff notes
+
+<!-- handsoff-issue-19 -->
+- #19: Introduce balanced wallet ledger invariants
