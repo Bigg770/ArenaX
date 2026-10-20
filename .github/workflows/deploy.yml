@@ -18,9 +18,35 @@ on:
         default: "60"
 
 jobs:
+  release-checklist:
+    name: Production readiness & release checklist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify release checklist is present
+        run: |
+          test -f docs/RELEASE_CHECKLIST.md || {
+            echo "::error::docs/RELEASE_CHECKLIST.md is missing; a release cannot be evaluated without it."
+            exit 1
+          }
+
+      - name: Publish checklist to the run summary
+        run: |
+          {
+            echo "## Production readiness & release checklist"
+            echo ""
+            echo "Every item below must carry an evidence link or an explicit not-applicable rationale."
+            echo "Release blockers must be cleared before cutover; post-release monitoring owners are tracked after cutover."
+            echo ""
+            cat docs/RELEASE_CHECKLIST.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-and-push:
     name: Build & push images
     runs-on: ubuntu-latest
+    needs: release-checklist
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
       backend_digest: ${{ steps.backend.outputs.digest }}

@@ -392,11 +392,15 @@ backend/
 │   │   ├── wallet.rs      # Payment and Stellar integration endpoints
 │   │   ├── lead
 
-### Production Considerations
-- **Load Balancing**: Multiple backend instances
-- **Database Scaling**: Read replicas and sharding
-- **Stellar Network**: Mainnet vs testnet configuration
-- **Monitoring**: Production monitoring setup
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid request (validation failure) |
+| `401` | Missing or invalid bearer token |
+| `403` | Authenticated but not authorized for this action |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. duplicate resource) |
+| `429` | Rate limited |
+| `500` | Internal server error |
 
 # Increase case count locally
 PROPTEST_CASES=10000 cargo test --test property_brackets
