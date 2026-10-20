@@ -114,6 +114,135 @@ pub static CIRCUIT_BREAKER_TRIPS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     counter
 });
 
+// Dependency health gauge (Issue #1079)
+pub static DEPENDENCY_HEALTH: Lazy<IntGaugeVec> = Lazy::new(|| {
+    let gauge = IntGaugeVec::new(
+        Opts::new(
+            "dependency_health",
+            "Health of downstream dependencies (1=ok, 0=failed) from the readiness probe",
+        ),
+        &["service"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("metric can be registered");
+    gauge
+});
+
+pub static PROFILE_CACHE_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new("profile_cache_requests_total", "Profile cache reads by outcome"),
+        &["outcome"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("metric can be registered");
+    counter
+});
+
+pub static CACHE_HIT_RATE: Lazy<IntGauge> = Lazy::new(|| {
+    let gauge = IntGauge::new("cache_hit_rate", "Profile cache hit rate in percent")
+        .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("metric can be registered");
+    gauge
+});
+
+static PROFILE_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static PROFILE_CACHE_READS: AtomicU64 = AtomicU64::new(0);
+
+// ── Soroban transactions (#1070) ─────────────────────────────────────────────
+pub static SOROBAN_TX_SUBMITTED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "soroban_tx_submitted_total",
+            "Soroban contract invocations attempted",
+        ),
+        &["contract", "method"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("metric can be registered");
+    counter
+});
+
+pub static SOROBAN_TX_SUCCESS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "soroban_tx_success_total",
+            "Soroban transactions confirmed successful on-chain",
+        ),
+        &["contract", "method"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("metric can be registered");
+    counter
+});
+
+pub static SOROBAN_TX_FAILED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "soroban_tx_failed_total",
+            "Soroban transactions that ended without a confirmed success",
+        ),
+        &["contract", "method", "reason"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("metric can be registered");
+    counter
+});
+
+pub static SOROBAN_TX_RETRIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "soroban_tx_retries_total",
+            "Status-poll retries while waiting for a Soroban transaction to confirm",
+        ),
+        &["contract", "method"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("metric can be registered");
+    counter
+});
+
+pub static SOROBAN_TX_LATENCY_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+    let histogram = HistogramVec::new(
+        prometheus::HistogramOpts::new(
+            "soroban_tx_latency_seconds",
+            "End-to-end time from invoke to confirmed success, in seconds",
+        )
+        .buckets(vec![0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0]),
+        &["contract", "method"],
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(histogram.clone()))
+        .expect("metric can be registered");
+    histogram
+});
+
+pub static SOROBAN_DLQ_DEPTH: Lazy<IntGauge> = Lazy::new(|| {
+    let gauge = IntGauge::new(
+        "soroban_dlq_depth",
+        "Entries currently in the Soroban transaction dead-letter queue",
+    )
+    .expect("metric can be created");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("metric can be registered");
+    gauge
+});
+
 /// Count of WebSocket messages dropped for exceeding the per-connection
 /// rate limit (#1083), labeled by user so a single flooding user stands out.
 pub static WS_MESSAGES_RATE_LIMITED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -210,6 +339,13 @@ pub fn init_metrics() {
     Lazy::force(&CIRCUIT_BREAKER_TRIPS_TOTAL);
     Lazy::force(&PROFILE_CACHE_REQUESTS_TOTAL);
     Lazy::force(&CACHE_HIT_RATE);
+    Lazy::force(&DEPENDENCY_HEALTH);
+    Lazy::force(&SOROBAN_TX_SUBMITTED_TOTAL);
+    Lazy::force(&SOROBAN_TX_SUCCESS_TOTAL);
+    Lazy::force(&SOROBAN_TX_FAILED_TOTAL);
+    Lazy::force(&SOROBAN_TX_RETRIES_TOTAL);
+    Lazy::force(&SOROBAN_TX_LATENCY_SECONDS);
+    Lazy::force(&SOROBAN_DLQ_DEPTH);
 
     // Process-level metrics (process_resident_memory_bytes, process_cpu_seconds_total,
     // open fds, ...) — only available on Linux in prometheus crate.
@@ -264,6 +400,14 @@ pub fn record_circuit_breaker_trip(service: &str) {
     CIRCUIT_BREAKER_TRIPS_TOTAL
         .with_label_values(&[service])
         .inc();
+}
+
+/// Update the `dependency_health{service}` gauge (1=ok, 0=failed) from a
+/// readiness check (Issue #1079).
+pub fn record_dependency_health(service: &str, healthy: bool) {
+    DEPENDENCY_HEALTH
+        .with_label_values(&[service])
+        .set(if healthy { 1 } else { 0 });
 }
 
 /// A Soroban contract invocation was attempted.

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE user_elo SET current_rating = $1, updated_at = $2 WHERE user_id = $3 AND game = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a6b4f0dc8d1573215d49a2b0f7a1e135a79668709d0bdb94618dcb4e0153b3bd"
+}

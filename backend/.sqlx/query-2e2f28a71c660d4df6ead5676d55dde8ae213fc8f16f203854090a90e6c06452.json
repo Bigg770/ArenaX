@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM idempotency_keys WHERE key LIKE 'test_key_%'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "2e2f28a71c660d4df6ead5676d55dde8ae213fc8f16f203854090a90e6c06452"
+}

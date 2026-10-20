@@ -25,8 +25,9 @@ pub async fn test_concurrent_balance_updates(pool: &PgPool, user_id: Uuid) -> Re
     for i in 0..10 {
         let pool_clone = pool.clone();
         let user_id_clone = user_id;
+        let config_clone = config.clone();
         let handle = tokio::spawn(async move {
-            let result = execute_transaction(&pool_clone, &config, move |tx| {
+            let result = execute_transaction(&pool_clone, &config_clone, move |tx| {
                 Box::pin(async move {
                     // Lock the wallet row
                     sqlx::query!(
@@ -34,8 +35,7 @@ pub async fn test_concurrent_balance_updates(pool: &PgPool, user_id: Uuid) -> Re
                         user_id_clone
                     )
                     .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     // Simulate some processing time
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -47,8 +47,7 @@ pub async fn test_concurrent_balance_updates(pool: &PgPool, user_id: Uuid) -> Re
                         user_id_clone
                     )
                     .execute(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     Ok::<(), sqlx::Error>(())
                 })
@@ -110,15 +109,16 @@ pub async fn test_concurrent_deductions_with_insufficient_balance(
     };
 
     let pool = Arc::new(pool.clone());
-    let mut handles = vec![];
+    let mut handles: Vec<tokio::task::JoinHandle<bool>> = vec![];
 
     // Spawn 10 concurrent tasks that each try to deduct 100
     // Only 5 should succeed (500 / 100 = 5)
     for i in 0..10 {
         let pool_clone = pool.clone();
         let user_id_clone = user_id;
+        let config_clone = config.clone();
         let handle = tokio::spawn(async move {
-            let result = execute_transaction(&pool_clone, &config, move |tx| {
+            let result = execute_transaction(&pool_clone, &config_clone, move |tx| {
                 Box::pin(async move {
                     // Lock and check balance
                     let wallet = sqlx::query!(
@@ -126,8 +126,7 @@ pub async fn test_concurrent_deductions_with_insufficient_balance(
                         user_id_clone
                     )
                     .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     let current_balance = wallet.balance_ngn.unwrap_or(0);
                     if current_balance < 100 {
@@ -147,18 +146,14 @@ pub async fn test_concurrent_deductions_with_insufficient_balance(
                         user_id_clone
                     )
                     .execute(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     Ok::<(), sqlx::Error>(())
                 })
             })
             .await;
 
-            match result {
-                Ok(_) => Ok(true),
-                Err(_) => Ok(false), // Expected to fail for some transactions
-            }
+            result.is_ok()
         });
         handles.push(handle);
     }
@@ -166,7 +161,7 @@ pub async fn test_concurrent_deductions_with_insufficient_balance(
     // Wait for all tasks and count successes
     let mut success_count = 0;
     for handle in handles {
-        let success = handle.await.map_err(|e| format!("Task join failed: {}", e))??;
+        let success = handle.await.map_err(|e| format!("Task join failed: {}", e))?;
         if success {
             success_count += 1;
         }
@@ -185,7 +180,7 @@ pub async fn test_concurrent_deductions_with_insufficient_balance(
         "SELECT balance_ngn FROM wallets WHERE user_id = $1",
         user_id
     )
-    .fetch_one(pool)
+    .fetch_one(&*pool)
     .await
     .map_err(|e| format!("Failed to fetch wallet: {}", e))?;
 
@@ -229,17 +224,17 @@ pub async fn test_transaction_retry_on_serialization(pool: &PgPool) -> Result<()
     for _ in 0..5 {
         let pool_clone = pool.clone();
         let user_id_clone = user_id;
+        let config_clone = config.clone();
         let handle = tokio::spawn(async move {
-            let result = execute_transaction(&pool_clone, &config, move |tx| {
+            let result = execute_transaction(&pool_clone, &config_clone, move |tx| {
                 Box::pin(async move {
                     // Lock the wallet
                     sqlx::query!(
-                        "SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE",
+                        "SELECT 1 as dummy FROM wallets WHERE user_id = $1 FOR UPDATE",
                         user_id_clone
                     )
                     .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     // Simulate processing time to increase chance of conflict
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -250,8 +245,7 @@ pub async fn test_transaction_retry_on_serialization(pool: &PgPool) -> Result<()
                         user_id_clone
                     )
                     .execute(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     Ok::<(), sqlx::Error>(())
                 })
@@ -317,17 +311,17 @@ pub async fn test_deadlock_detection(pool: &PgPool) -> Result<(), String> {
     // Spawn a transaction that holds a lock for a long time
     let pool_clone = pool.clone();
     let user_id_clone = user_id;
+    let config_clone = config.clone();
     let long_tx_handle = tokio::spawn(async move {
-        execute_transaction(&pool_clone, &config, move |tx| {
+        execute_transaction(&pool_clone, &config_clone, move |tx| {
             Box::pin(async move {
                 // Lock the wallet
                 sqlx::query!(
-                    "SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE",
+                    "SELECT 1 as dummy FROM wallets WHERE user_id = $1 FOR UPDATE",
                     user_id_clone
                 )
                 .fetch_one(&mut **tx)
-                .await
-                .map_err(|e| sqlx::Error::Database(e.into()))?;
+                .await?;
 
                 // Hold the lock for 5 seconds
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -341,18 +335,18 @@ pub async fn test_deadlock_detection(pool: &PgPool) -> Result<(), String> {
     // Try to acquire the same lock with a timeout
     let pool_clone2 = pool.clone();
     let user_id_clone2 = user_id;
+    let config_clone2 = config.clone();
     let quick_tx_handle = tokio::spawn(async move {
         let result = timeout(
             Duration::from_secs(2),
-            execute_transaction(&pool_clone2, &config, move |tx| {
+            execute_transaction(&pool_clone2, &config_clone2, move |tx| {
                 Box::pin(async move {
                     sqlx::query!(
-                        "SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE",
+                        "SELECT 1 as dummy FROM wallets WHERE user_id = $1 FOR UPDATE",
                         user_id_clone2
                     )
                     .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|e| sqlx::Error::Database(e.into()))?;
+                    .await?;
 
                     Ok::<(), sqlx::Error>(())
                 })

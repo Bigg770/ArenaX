@@ -1,20 +1,27 @@
 /**
- * WebSocket Connection Manager — Issue #697
+ * WebSocket Connection Manager — Issue #697 / #34
  *
  * Features:
- * - Automatic reconnect with exponential back-off + jitter
- * - Heartbeat / ping-pong keep-alive
- * - Connection status indicators: connected | connecting | reconnecting | offline
- * - Auth token injection on connect
- * - Event-typed message dispatch
- * - Analytics hooks for connection lifecycle events
+ * - Automatic reconnect with bounded exponential back-off + jitter
+ * - Heartbeat / ping-pong keep-alive & mobile sleep / visibility recovery (#34)
+ * - Permanent authorization failure backoff / abort (#34)
+ * - Full authoritative resync on reconnect (#34)
+ * - Auth token renewal support (#34)
+ * - Clean unsubscribe and lifecycle cleanup on route change / unmount (#34)
  */
 
 "use client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "offline" | "closed";
+export type ConnectionStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "offline"
+  | "unauthorized"
+  | "closed";
 
 export interface WsMessage<T = unknown> {
   /** Message category / event name */
@@ -29,11 +36,13 @@ export interface WsConnectionConfig {
   url: string;
   /** JWT token for auth handshake */
   getToken?: () => string | null;
-  /** Heartbeat interval in ms (default: 30 000) */
+  /** Optional token renewal handler called upon auth failure / reconnect */
+  renewAuth?: () => Promise<string | null | boolean>;
+  /** Heartbeat interval in ms (default: 25 000) */
   heartbeatIntervalMs?: number;
   /** Max reconnect attempts before giving up (default: 10) */
   maxReconnectAttempts?: number;
-  /** Base reconnect delay in ms (default: 1 000) */
+  /** Base reconnect delay in ms (default: 500) */
   reconnectBaseDelayMs?: number;
   /** Max reconnect delay cap in ms (default: 30 000) */
   reconnectMaxDelayMs?: number;
@@ -41,8 +50,10 @@ export interface WsConnectionConfig {
   onMessage?: (msg: WsMessage) => void;
   /** Called on connection status change */
   onStatusChange?: (status: ConnectionStatus) => void;
-  /** Called when permanently disconnected (maxRetries exceeded) */
+  /** Called when permanently disconnected */
   onPermanentDisconnect?: () => void;
+  /** Called on successful reconnect to refresh authoritative application state */
+  onResync?: () => Promise<void> | void;
 }
 
 export interface ConnectionMetrics {
@@ -77,6 +88,8 @@ export function clearWsEvents(): void {
   _wsEvents.length = 0;
 }
 
+const PERMANENT_AUTH_CODES = [1008, 4001, 4003, 4401, 4403];
+
 // ─── Connection Manager ───────────────────────────────────────────────────────
 
 export class WebSocketManager {
@@ -87,6 +100,7 @@ export class WebSocketManager {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private explicitClose = false;
+  private listenersAttached = false;
 
   private readonly metrics: ConnectionMetrics = {
     connectedAt: null,
@@ -102,15 +116,19 @@ export class WebSocketManager {
   constructor(config: WsConnectionConfig) {
     this.config = {
       getToken: () => null,
-      heartbeatIntervalMs: 30_000,
+      renewAuth: async () => null,
+      heartbeatIntervalMs: 25_000,
       maxReconnectAttempts: 10,
-      reconnectBaseDelayMs: 1_000,
+      reconnectBaseDelayMs: 500,
       reconnectMaxDelayMs: 30_000,
       onMessage: () => {},
       onStatusChange: () => {},
       onPermanentDisconnect: () => {},
+      onResync: async () => {},
       ...config,
     };
+
+    this.attachDomListeners();
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -123,6 +141,7 @@ export class WebSocketManager {
   disconnect(): void {
     this.explicitClose = true;
     this.cleanup();
+    this.detachDomListeners();
     this.setStatus("closed");
     trackWsEvent("explicit_disconnect");
   }
@@ -147,16 +166,77 @@ export class WebSocketManager {
     return { ...this.metrics };
   }
 
-  // ─── Internal ───────────────────────────────────────────────────────────────
+  // ─── Lifecycle & Network Handlers (#34) ──────────────────────────────────────
 
-  private openSocket(): void {
-    this.setStatus(this.reconnectAttempt > 0 ? "reconnecting" : "connecting");
+  private handleVisibilityChange = (): void => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+        if (this.status !== "unauthorized" && !this.explicitClose) {
+          trackWsEvent("visibility_reconnect");
+          this.reconnectAttempt = 0;
+          this.openSocket();
+        }
+      } else if (this.ws.readyState === WebSocket.OPEN) {
+        // Fast ping to verify socket isn't dead
+        this.send("ping", { timestamp: Date.now() });
+      }
+    }
+  };
+
+  private handleOnline = (): void => {
+    if (this.status !== "unauthorized" && !this.explicitClose) {
+      trackWsEvent("network_online_reconnect");
+      this.reconnectAttempt = 0;
+      this.openSocket();
+    }
+  };
+
+  private handleOffline = (): void => {
+    trackWsEvent("network_offline");
+    this.setStatus("offline");
+  };
+
+  private attachDomListeners(): void {
+    if (typeof window === "undefined" || this.listenersAttached) return;
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    window.addEventListener("online", this.handleOnline);
+    window.addEventListener("offline", this.handleOffline);
+    this.listenersAttached = true;
+  }
+
+  private detachDomListeners(): void {
+    if (typeof window === "undefined" || !this.listenersAttached) return;
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+    window.removeEventListener("online", this.handleOnline);
+    window.removeEventListener("offline", this.handleOffline);
+    this.listenersAttached = false;
+  }
+
+  // ─── Internal Socket Handling ───────────────────────────────────────────────
+
+  private async openSocket(): Promise<void> {
+    const wasReconnecting = this.reconnectAttempt > 0;
+    this.setStatus(wasReconnecting ? "reconnecting" : "connecting");
     trackWsEvent("connecting", this.config.url);
+
+    // Optional auth renewal if reconnecting
+    if (wasReconnecting && this.config.renewAuth) {
+      try {
+        const renewed = await this.config.renewAuth();
+        if (renewed === false) {
+          this.setStatus("unauthorized");
+          trackWsEvent("permanent_disconnect", "renew_auth_failed");
+          this.config.onPermanentDisconnect();
+          return;
+        }
+      } catch {
+        // Continue with current token
+      }
+    }
 
     let url = this.config.url;
     const token = this.config.getToken();
     if (token) {
-      // Append token as query param for WS (Authorization header not supported in browser WS)
       const separator = url.includes("?") ? "&" : "?";
       url = `${url}${separator}token=${encodeURIComponent(token)}`;
     }
@@ -169,12 +249,21 @@ export class WebSocketManager {
       return;
     }
 
-    this.ws.onopen = () => {
+    this.ws.onopen = async () => {
       this.reconnectAttempt = 0;
       this.metrics.connectedAt = Date.now();
       this.setStatus("connected");
       this.startHeartbeat();
       trackWsEvent("connected", this.config.url);
+
+      if (wasReconnecting && this.config.onResync) {
+        try {
+          await this.config.onResync();
+          trackWsEvent("resync_completed");
+        } catch (err) {
+          trackWsEvent("resync_error", String(err));
+        }
+      }
     };
 
     this.ws.onmessage = (event: MessageEvent) => {
@@ -182,7 +271,7 @@ export class WebSocketManager {
       try {
         const data = JSON.parse(event.data as string) as WsMessage;
 
-        // Handle server pong (keep-alive response)
+        // Keepalive responses
         if (data.type === "pong" || data.type === "heartbeat") {
           this.metrics.lastHeartbeatAt = Date.now();
           if (this.pongTimer) {
@@ -192,14 +281,22 @@ export class WebSocketManager {
           return;
         }
 
+        // Auth rejection
+        if (data.type === "auth_error") {
+          this.setStatus("unauthorized");
+          trackWsEvent("permanent_disconnect", "auth_error_message");
+          this.cleanup();
+          this.config.onPermanentDisconnect();
+          return;
+        }
+
         this.config.onMessage(data);
       } catch {
-        // Non-JSON frame — ignore
+        // Non-JSON frame
       }
     };
 
     this.ws.onerror = () => {
-      // onerror fires before onclose — log but don't reconnect here
       trackWsEvent("socket_error");
     };
 
@@ -210,6 +307,14 @@ export class WebSocketManager {
 
       if (this.explicitClose) {
         this.setStatus("closed");
+        return;
+      }
+
+      // Permanent authorization failures: stop reconnecting (#34)
+      if (PERMANENT_AUTH_CODES.includes(event.code)) {
+        this.setStatus("unauthorized");
+        trackWsEvent("permanent_disconnect", `auth_failure_code=${event.code}`);
+        this.config.onPermanentDisconnect();
         return;
       }
 
@@ -238,7 +343,7 @@ export class WebSocketManager {
   }
 
   private calcDelay(attempt: number): number {
-    const jitter = Math.random() * 500;
+    const jitter = Math.random() * 300;
     const delay = this.config.reconnectBaseDelayMs * Math.pow(2, attempt) + jitter;
     return Math.min(delay, this.config.reconnectMaxDelayMs);
   }
@@ -251,11 +356,10 @@ export class WebSocketManager {
           this.ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
           this.metrics.lastHeartbeatAt = Date.now();
 
-          // If no pong within 10 s, force reconnect
           this.pongTimer = setTimeout(() => {
             trackWsEvent("heartbeat_timeout");
             this.ws?.close(4000, "Heartbeat timeout");
-          }, 10_000);
+          }, 8_000);
         } catch {
           // ignore send errors
         }

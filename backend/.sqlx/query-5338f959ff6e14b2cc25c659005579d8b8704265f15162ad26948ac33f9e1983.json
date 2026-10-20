@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO idempotency_keys (key, request_hash, response_status, response_headers, response_body, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW() - INTERVAL '1 hour')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int2",
+        "Jsonb",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5338f959ff6e14b2cc25c659005579d8b8704265f15162ad26948ac33f9e1983"
+}

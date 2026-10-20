@@ -1,131 +1,67 @@
 # Pull Request Template for ArenaX
 
 ## Issue Reference
-Issue: #978 - API Key Rotation System
+Issue: #<number> - <title>
 
 ## Description
-Implemented a comprehensive API Key Rotation System with structured permissions management, usage tracking, and revocation mechanisms.
+<What does this PR do and why?>
 
 ## Changes Summary
 
 ### New Files
-- `backend/migrations/20260827000001_api_key_rotation.up.sql` - Database schema for API key rotation system
-- `backend/migrations/20260827000001_api_key_rotation.down.sql` - Rollback migration
-- `backend/src/models/api_key.rs` - API key data models and DTOs
-- `backend/src/service/api_key_service.rs` - Business logic for API key management
-- `backend/src/http/api_key.rs` - HTTP API endpoints for API key operations
+- `<path>` - <purpose>
 
 ### Modified Files
-- `.github/CODEOWNERS` - Added API key related file ownership
+- `<path>` - <purpose>
 
-### Database Schema Changes
-- `api_keys` - Main table with key properties, rotation settings, usage tracking
-- `api_key_usage_logs` - Audit trail for all API key usage
-- `api_key_rotation_history` - Records all key rotations with hashes
-- `api_key_summaries` - View with computed status (active/revoked/expired/max_uses_exceeded/rotation_due)
+## Data Classification & Retention Review
 
-## Features Implemented
+Every new or changed storage field (PostgreSQL column, Redis key, object-storage
+object/prefix, log field, analytics event/property) MUST be classified before
+merge. Unclassified fields block the PR.
 
-### ✅ Key Generation & Rotation
-- Cryptographically secure key generation (32-byte random, URL-safe base64)
-- Key rotation with automatic old key invalidation
-- Configurable rotation intervals (30d, 90d, 180d, etc.)
+### Data Inventory
 
-### ✅ Scoped Permissions
-- Per-key scope definitions (`scopes: Vec<String>`)
-- Usage tracking with scope-level audit
+For each sensitive data class touched by this PR, fill in a row. Use the
+canonical classes below; add a row only if a genuinely new class is introduced
+(and justify it in Additional Notes).
 
-### ✅ Expiration Management
-- Configurable expiration dates
-- Automatic status tracking (expired, rotation_due)
-- Rotation scheduling with next_rotation_date
+| Data class | Purpose | Sensitivity | Owner | Retention | Deletion / hold rules | Systems of record |
+|---|---|---|---|---|---|---|
+| Account (identity, profile, credentials, sessions) | Authenticate and operate user accounts | Restricted | Identity team | Active account + 30 days after closure | Hard-delete on account closure after grace period; auth logs anonymized; legal hold suspends deletion | PostgreSQL (`users`, `sessions`), Redis (session cache), logs |
+| Match (gameplay, results, matchmaking state) | Run matches, scoring, dispute resolution | Confidential | Gameplay team | 24 months from match end | Purge/anonymize after retention; active disputes and legal holds suspend deletion | PostgreSQL (`matches`), Redis (matchmaking), object storage (replays) |
+| Financial (payments, payouts, ledger, invoices) | Process payments and satisfy accounting obligations | Restricted | Finance team | 7 years (accounting exception) | Retained for statutory accounting period; deletion only after period and no hold; access restricted to Finance + Auditors | PostgreSQL (ledger), object storage (invoices/receipts) |
+| Evidence (disputes, anti-cheat, moderation artifacts) | Resolve disputes and enforce integrity | Restricted | Trust & Safety team | 12 months, or until case closed + 12 months | Deleted after retention unless legal hold; hold release requires Trust & Safety lead + Legal | Object storage (evidence bucket), PostgreSQL (case metadata) |
+| Telemetry (metrics, traces, analytics events) | Observability, product analytics, abuse detection | Internal | Platform team | 90 days raw; 13 months aggregated | Auto-expire raw data; aggregates anonymized; no PII in analytics properties | Logs, analytics platform, Redis (short-lived counters) |
 
-### ✅ Usage Tracking
-- Full request audit trail (endpoint, method, duration, status codes)
-- Per-key usage counters
-- Maximum use limits with automatic enforcement
+### Field Classification (required for each new/changed field)
 
-### ✅ Revocation Mechanism
-- Soft-delete with is_active flag
-- Revocation metadata (revoked_at, revoked_by, reason)
-- Complete rotation history tracking
+| Field / key | System | Sensitivity | Retention | Owner |
+|---|---|---|---|---|
+| `<field>` | `<PostgreSQL / Redis / object storage / logs / analytics>` | `<Public / Internal / Confidential / Restricted>` | `<period>` | `<team>` |
 
-## API Endpoints
-```
-POST   /api/api-keys              - Create new API key
-GET    /api/api-keys              - List user's API keys
-GET    /api/api-keys/{key_id}     - Get key details
-PUT    /api/api-keys/{key_id}     - Update key configuration
-DELETE /api/api-keys/{key_id}     - Revoke key
-POST   /api/api-keys/{key_id}/rotate - Rotate key
-GET    /api/api-keys/{key_id}/usage - Get usage logs
-GET    /api/api-keys/stats        - Get aggregate statistics
-```
+### Legal Hold & Accounting Exceptions
+
+- [ ] No legal hold or accounting exception applies to data in this PR.
+- [ ] Legal hold applies. Placing/releasing a hold requires written approval from
+      Legal plus the data-class owner; holds are recorded in the hold register and
+      enforced by the deletion job (deletion is skipped while a hold is active).
+- [ ] Accounting retention exception applies (financial data, 7 years). Access is
+      restricted to Finance and Auditors via role-based access control; deletion is
+      blocked until the statutory period elapses.
+
+### Validation
+
+- [ ] Traced a representative user record through PostgreSQL, Redis, object
+      storage, logs, and analytics and confirmed retention/deletion behavior.
+- [ ] Confirmed deletion jobs honor legal holds and accounting retention.
 
 ## Testing Checklist
-- [ ] Database migrations apply cleanly
-- [ ] Key generation produces unique, secure keys
-- [ ] Rotation invalidates old key and creates valid new key
-- [ ] Usage tracking records all required fields
-- [ ] Expiration status updates correctly
-- [ ] Revocation prevents further API usage
-- [ ] Scopes are enforced during key validation
-
-## Production Readiness & Release Checklist
-
-Complete every item before merging a release PR. Each item requires an evidence link (CI run, dashboard, PR, doc) or an explicit `N/A` with a one-line rationale. Items marked **[BLOCKER]** must pass before release; items marked **[POST-RELEASE]** are owned by the named monitoring owner after deploy.
-
-### Migrations
-- [ ] **[BLOCKER]** Forward migrations reviewed and applied in staging — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Down/rollback migration tested and documented — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Migration is backward-compatible with the currently deployed version — Evidence: _link or N/A + rationale_
-
-### Rollback
-- [ ] **[BLOCKER]** Rollback procedure documented and rehearsed (app + schema) — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Rollback owner identified for the release window — Evidence: _link or N/A + rationale_
-
-### Backups
-- [ ] **[BLOCKER]** Pre-release backup taken and restore verified — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Backup retention window covers the rollback period — Evidence: _link or N/A + rationale_
-
-### SLOs
-- [ ] **[BLOCKER]** SLOs/dashboards reviewed for the affected services — Evidence: _link or N/A + rationale_
-- [ ] **[POST-RELEASE]** Error-budget burn monitored — Owner: _name_
-- [ ] **[POST-RELEASE]** Latency/throughput regression watch — Owner: _name_
-
-### Secrets
-- [ ] **[BLOCKER]** No secrets committed; new secrets provisioned via the secret manager — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Rotated/expired credentials updated in all environments — Evidence: _link or N/A + rationale_
-
-### Provider / Webhook Readiness
-- [ ] **[BLOCKER]** External providers and webhook endpoints reachable and verified in staging — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Webhook signing/verification keys match the target environment — Evidence: _link or N/A + rationale_
-- [ ] **[POST-RELEASE]** Webhook delivery failures and retries monitored — Owner: _name_
-
-### Contract IDs / Wasm Hashes
-- [ ] **[BLOCKER]** Deployed contract IDs recorded and match the release manifest — Evidence: _link or N/A + rationale_
-- [ ] **[BLOCKER]** Wasm hashes verified against the audited build — Evidence: _link or N/A + rationale_
-
-### Accessibility
-- [ ] **[BLOCKER]** Accessibility checks pass for changed UI (keyboard, contrast, screen reader) — Evidence: _link or N/A + rationale_
-
-### Support Escalation
-- [ ] **[BLOCKER]** Support escalation path and on-call contact published for the release — Evidence: _link or N/A + rationale_
-- [ ] **[POST-RELEASE]** Support ticket volume and escalations monitored — Owner: _name_
-
-### Release Sign-off
-- [ ] **[BLOCKER]** All blockers above checked with evidence or N/A rationale
-- [ ] **[POST-RELEASE]** Post-release monitoring owners named for every [POST-RELEASE] item
-
-## Dependencies
-- `base64` crate for URL-safe key encoding
-- `sha2` crate for key hashing (SHA-256)
-- `chrono` crate for date/time handling
+- [ ] Tests added/updated and passing
+- [ ] Migrations apply cleanly (if applicable)
 
 ## Breaking Changes
-None - this is a new feature.
+<None, or describe>
 
 ## Additional Notes
-- Keys are stored as SHA-256 hashes in the database for security
-- Rotation history maintains both old and new key hashes for audit
-- Usage logs can be queried with pagination (limit/offset)
+<Anything reviewers should know, including justification for new data classes>

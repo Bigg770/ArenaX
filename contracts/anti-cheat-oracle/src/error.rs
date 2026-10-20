@@ -60,4 +60,8 @@ pub enum AntiCheatError {
     EmergencyPaused = 31,
     ReputationNotSet = 32,
     ArithmeticOverflow = 33,
+    AttestationAlreadyUsed = 34,
+    AttestationExpired = 35,
+    InvalidAttestationWindow = 36,
+    InvalidAttestationDomain = 37,
 }

@@ -1,119 +1,117 @@
 # Contributing to ArenaX
 
-Thanks for helping improve ArenaX. This guide covers onboarding, subsystem ownership, required validation, and the definition of done for issues and pull requests.
+## Branches
 
-## Getting started
+| Pattern | Purpose |
+|---|---|
+| `main` | Production-ready code |
+| `dev` | Integration branch |
+| `feat/<name>` | New features |
+| `fix/<name>` | Bug fixes |
+| `chore/<name>` | Tooling, deps, config |
+| `contract/<name>` | Smart contract changes |
+| `migration/<name>` | DB schema changes |
 
-1. Fork the repository and create a branch from `main`.
-2. Run `make setup` to install dependencies and create local env files.
-3. Make your change, run the relevant checks below, and open a pull request.
+All PRs target `dev`. Only `dev` → `main` merges go to production.
 
-## Subsystem owners and workflows
+## Commit messages
 
-ArenaX is split into four subsystems. Each has its own toolchain, owners, and validation commands.
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-| Subsystem | Location | Owners | Toolchain |
-| --- | --- | --- | --- |
-| Rust backend | `backend/` | @backend-owners | Rust / Cargo |
-| TypeScript server | `server/` | @server-owners | Node / TypeScript |
-| Frontend | `frontend/` | @frontend-owners | Next.js / Yarn |
-| Soroban contracts | `contracts/` | @contracts-owners | Rust / Soroban |
+```
+feat(contracts): add match escrow vault dispute resolution
+fix(backend): correct varchar/integer comparison in tournament view
+chore(deps): bump next to 14.2.25
+migration: add governance tables
+```
 
-### Rust backend (`backend/`)
+Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `migration`, `contract`
 
-- Build: `make build-backend` (`cargo build --release`)
-- Test: `make test-backend` (`cargo test`)
-- Lint/format: `make lint` and `make format` (`cargo clippy`, `cargo fmt`)
+## Development setup
 
-### TypeScript server (`server/`)
+### Backend (Rust)
+```bash
+cd backend
+cp env.example .env          # fill in DATABASE_URL, JWT_SECRET, etc.
+cargo sqlx migrate run
+cargo build
+cargo test
+```
 
-- Install: `yarn install` in `server/`
-- Build: `yarn build`
-- Test: `yarn test`
-- Lint/format: `yarn lint` and `yarn format`
+### Contracts (Soroban)
+```bash
+cd contracts
+rustup target add wasm32-unknown-unknown
+cargo test
+cargo build --target wasm32-unknown-unknown --release
+```
 
-### Frontend (`frontend/`)
+### Server (TypeScript)
+```bash
+cd server
+npm ci
+npm run prisma:generate
+npm run build
+```
 
-- Install: `make install-frontend` (`yarn install`)
-- Dev server: `make dev-frontend` (`yarn dev`)
-- Build: `make build-frontend` (`yarn build`)
-- Test: `make test-frontend` (`yarn test`)
-- Lint/format: `make lint` and `make format` (`yarn lint`, `yarn format`)
+### Frontend (Next.js)
+```bash
+cd frontend
+npm ci
+npm run build
+```
 
-### Soroban contracts (`contracts/`)
+## Pull requests
 
-- Build: `make build-contracts` (adds `wasm32-unknown-unknown` and builds the release WASM)
-- Test: `make test-contracts` (`cargo test`)
-- Lint/format: `make lint` and `make format` (`cargo clippy`, `cargo fmt`)
+- Keep PRs focused — one concern per PR.
+- All CI checks must pass before merge
+- Smart contract changes require two approvals
+- DB migrations must include a `.down.sql`
+- Never force-push to `main` or `dev`
 
-Run `make check-all` before opening a PR to run lint, format, and tests across subsystems.
+## Smart contract guidelines
 
-## Migration and contract review requirements
+- All public functions must have tests in `test.rs`
+- Use `#[contracttype]` for all storage keys
+- Bump the contract version constant on any interface change
+- Document breaking changes in the PR description
 
-- **Database migrations:** every migration must be reversible, include an up and down path, and be reviewed by a backend owner. Document the migration in the PR description and note any data backfill.
-- **Soroban contract changes:** any change to `contracts/` requires review from a contracts owner. Include the updated interface, storage layout, and a migration/upgrade note. Contract changes must ship with tests covering the new behavior.
-- **API contract changes:** changes to request/response shapes require review from the owning subsystem and an update to the generated API docs.
+## Database migrations
 
-## Security-sensitive and financial changes
+- Migrations are append-only — never edit an existing migration file
+- Test both `up` and `down` migrations locally before opening a PR
+- Column/type changes require a multi-step migration (add → backfill → drop)
 
-Changes touching authentication, authorization, key handling, payments, balances, or on-chain value transfer are security-sensitive.
+## Dependency & supply-chain gate
 
-- Required reviewers: at least one security reviewer and one owner of the affected subsystem.
-- Validation evidence: include tests demonstrating the change, a description of the threat or failure mode addressed, and any manual verification steps.
-- Never commit secrets, private keys, or credentials. Use the provided `env.example` files for local configuration.
+CI runs a lockfile-aware dependency and software-supply-chain gate across every
+package ecosystem in the repo (Rust `backend/Cargo.lock`, Node lockfiles in
+`server/` and `frontend/`, and the `contracts/` workspace). The gate reports the
+identity of both direct and transitive dependencies, checks them against known
+advisories, and reports the license of each detected dependency.
 
-## Branch and status-check policy
+- **High-severity findings fail the build.** A high/critical advisory blocks the
+  PR or release unless a reviewed exception is recorded (see below).
+- **Scan results are retained** as CI artifacts tied to release provenance
+  (commit SHA, ref, and run id) so a release can be traced back to the exact
+  dependency set that was scanned.
+- **Normal builds stay offline-friendly.** The gate reads committed lockfiles and
+  does not make ordinary `cargo build` / `npm ci` steps depend on network
+  advisory lookups.
 
-- Branch from `main` and keep branches focused on a single issue.
-- All required CI status checks must pass before merge. Do not merge with failing or skipped required checks.
-- Keep the branch up to date with `main`; resolve conflicts locally before requesting review.
-- Squash-merge unless the change is intentionally split into reviewable commits.
+### Exception process
 
-## Production readiness and release checklist
+When a high-severity finding cannot be fixed immediately, record a time-bounded,
+reviewed exception instead of disabling the gate:
 
-Every release is evaluated across product, reliability, security, financial controls, and operations — not build success alone. Copy this checklist into the release PR description (or the deployment workflow run) and fill in each row. Every item needs an evidence link or an explicit `N/A` with a rationale; an empty cell is not acceptable.
+1. Add an entry to the advisory exception file (e.g. `.github/security/advisory-exceptions.yml`)
+   with the advisory ID, the affected package/ecosystem, a justification, and an
+   **expiry date**.
+2. Get review from a maintainer (security-sensitive — treat like a contract change).
+3. The gate honors the exception only until its expiry date; once expired the
+   finding fails the build again and the exception must be renewed or the
+   dependency upgraded/removed.
 
-**Release blockers** must be resolved before the release is promoted. **Post-release monitoring** items are owned after deploy and tracked to closure by the named owner.
-
-### Release blockers (must pass before promotion)
-
-| Item | Evidence link or N/A rationale | Owner |
-| --- | --- | --- |
-| Migrations reviewed, reversible, and backfill documented | | @backend-owners |
-| Rollback plan tested (previous artifact + down migration) | | @backend-owners |
-| Backups taken and restore verified for affected datastores | | @backend-owners |
-| Secrets/config rotated and present in target environment (no secrets in repo) | | @security-reviewers |
-| Provider and webhook readiness confirmed (endpoints, signing keys, retries) | | @server-owners |
-| Contract IDs and Wasm hashes recorded and match the deployed artifacts | | @contracts-owners |
-| SLOs defined for the changed surface with alert thresholds | | @backend-owners |
-| Accessibility checks pass for changed UI (keyboard, contrast, screen reader) | | @frontend-owners |
-| Support escalation path and on-call contact confirmed | | @backend-owners |
-
-### Post-release monitoring (owned after deploy)
-
-| Item | Evidence link or N/A rationale | Monitoring owner |
-| --- | --- | --- |
-| Error rate and latency dashboards watched for the first hour | | @backend-owners |
-| SLO burn-rate alerts firing correctly | | @backend-owners |
-| Webhook/provider delivery success rate within expected range | | @server-owners |
-| On-chain transaction success rate and contract events healthy | | @contracts-owners |
-| Support channel monitored for regressions and escalations | | @backend-owners |
-
-Run a tabletop release review against this checklist before promoting, and close any documentation gaps it surfaces.
-
-## Definition of done
-
-An issue is done when:
-
-- The change is implemented and scoped to the issue.
-- Relevant tests are added or updated and pass locally.
-- `make check-all` passes for the affected subsystems.
-- Documentation is updated when behavior, commands, or interfaces change.
-- Security-sensitive and financial changes have the required reviewers and validation evidence.
-
-A pull request is ready to merge when:
-
-- It references the issue it resolves.
-- All required status checks pass.
-- It has approval from the owning subsystem and, where applicable, a security reviewer.
-- The description explains what changed, why, and how it was validated.
+Exceptions are scoped to a single advisory and package — never blanket-disable
+the gate. Prefer upgrading or removing the vulnerable dependency over adding an
+exception.

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM matchmaking_queue WHERE user_id = $1 AND game = $2 AND game_mode = $3 AND status = $4 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5990d4b4cbf10a94e78bf32ef8aea8cc4675755d96bb369b2e4c3d2de57259a1"
+}

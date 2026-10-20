@@ -22,13 +22,14 @@ pub struct Tournament {
     pub start_time: DateTime<Utc>,
     pub end_time: Option<DateTime<Utc>>,
     pub registration_deadline: DateTime<Utc>,
-    pub created_by: Uuid,
+    pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub bracket_type: BracketType,
     pub rules: Option<String>,
     pub min_skill_level: Option<i32>, // For skill-based matchmaking
     pub max_skill_level: Option<i32>,
+    pub cleaned_up_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,15 +52,15 @@ impl std::fmt::Display for TournamentType {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum TournamentStatus {
-    Draft,
-    Upcoming,
-    RegistrationOpen,
-    RegistrationClosed,
-    InProgress,
-    Completed,
-    Cancelled,
+    Draft = 0,
+    Upcoming = 1,
+    RegistrationOpen = 2,
+    RegistrationClosed = 3,
+    InProgress = 4,
+    Completed = 5,
+    Cancelled = 6,
 }
 
 impl std::fmt::Display for TournamentStatus {
@@ -72,6 +73,21 @@ impl std::fmt::Display for TournamentStatus {
             TournamentStatus::InProgress => write!(f, "in_progress"),
             TournamentStatus::Completed => write!(f, "completed"),
             TournamentStatus::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl From<i32> for TournamentStatus {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => TournamentStatus::Draft,
+            1 => TournamentStatus::Upcoming,
+            2 => TournamentStatus::RegistrationOpen,
+            3 => TournamentStatus::RegistrationClosed,
+            4 => TournamentStatus::InProgress,
+            5 => TournamentStatus::Completed,
+            6 => TournamentStatus::Cancelled,
+            _ => TournamentStatus::Draft,
         }
     }
 }
@@ -168,20 +184,18 @@ pub struct TournamentParticipant {
     pub final_rank: Option<i32>,
     pub prize_amount: Option<i64>,
     pub prize_currency: Option<String>,
-    pub entry_fee_currency: Option<String>,
-    pub created_at: Option<DateTime<Utc>>,
-    pub updated_at: Option<DateTime<Utc>>,
+    pub prize_tx_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum ParticipantStatus {
-    Registered,
-    Paid,
-    Active,
-    Eliminated,
-    Disqualified,
-    Withdrawn,
+    Registered = 0,
+    Paid = 1,
+    Active = 2,
+    Eliminated = 3,
+    Disqualified = 4,
+    Withdrawn = 5,
 }
 
 impl std::fmt::Display for ParticipantStatus {
@@ -193,6 +207,20 @@ impl std::fmt::Display for ParticipantStatus {
             ParticipantStatus::Eliminated => write!(f, "eliminated"),
             ParticipantStatus::Disqualified => write!(f, "disqualified"),
             ParticipantStatus::Withdrawn => write!(f, "withdrawn"),
+        }
+    }
+}
+
+impl From<i32> for ParticipantStatus {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => ParticipantStatus::Registered,
+            1 => ParticipantStatus::Paid,
+            2 => ParticipantStatus::Active,
+            3 => ParticipantStatus::Eliminated,
+            4 => ParticipantStatus::Disqualified,
+            5 => ParticipantStatus::Withdrawn,
+            _ => ParticipantStatus::Registered,
         }
     }
 }
@@ -240,13 +268,13 @@ pub struct TournamentListResponse {
 
 // ===== Additional Types for Complete Tournament Management =====
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
-#[sqlx(type_name = "bracket_type", rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
+#[repr(i32)]
 pub enum BracketType {
-    SingleElimination,
-    DoubleElimination,
-    RoundRobin,
-    Swiss,
+    SingleElimination = 0,
+    DoubleElimination = 1,
+    RoundRobin = 2,
+    Swiss = 3,
 }
 
 impl std::fmt::Display for BracketType {
@@ -256,6 +284,18 @@ impl std::fmt::Display for BracketType {
             BracketType::DoubleElimination => write!(f, "double_elimination"),
             BracketType::RoundRobin => write!(f, "round_robin"),
             BracketType::Swiss => write!(f, "swiss"),
+        }
+    }
+}
+
+impl From<i32> for BracketType {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => BracketType::SingleElimination,
+            1 => BracketType::DoubleElimination,
+            2 => BracketType::RoundRobin,
+            3 => BracketType::Swiss,
+            _ => BracketType::SingleElimination,
         }
     }
 }
@@ -325,6 +365,7 @@ impl std::fmt::Display for MatchStatus {
         }
     }
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct TournamentRound {

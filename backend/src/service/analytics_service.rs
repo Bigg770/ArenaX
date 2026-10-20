@@ -212,7 +212,7 @@ impl AnalyticsService {
             active_players_30d: r.active_players_30d,
             total_staked: r.total_staked,
             total_volume: r.total_volume,
-            last_updated: r.last_updated.unwrap_or_else(Utc::now),
+            last_updated: r.last_updated,
         }).unwrap_or(PlatformMetricsResponse {
             total_matches_all_time: 0,
             active_players_30d: 0,
@@ -271,8 +271,8 @@ impl AnalyticsService {
     pub async fn get_aggregated_stats(
         &self,
         game_id: Option<i32>,
-        period_start: Option<i64>,
-        period_end: Option<i64>,
+        _period_start: Option<i64>,
+        _period_end: Option<i64>,
     ) -> Result<serde_json::Value, ApiError> {
         let game_filter = game_id.map(|_| "AND game_id = $1").unwrap_or("");
         let query = format!(
@@ -306,9 +306,9 @@ impl AnalyticsService {
     /// Get revenue metrics
     pub async fn get_revenue_metrics(
         &self,
-        game_id: Option<i32>,
-        period_start: Option<i64>,
-        period_end: Option<i64>,
+        _game_id: Option<i32>,
+        _period_start: Option<i64>,
+        _period_end: Option<i64>,
     ) -> Result<serde_json::Value, ApiError> {
         let platform = self.get_platform_metrics().await?;
         let total_users = sqlx::query_scalar::<_, i64>(

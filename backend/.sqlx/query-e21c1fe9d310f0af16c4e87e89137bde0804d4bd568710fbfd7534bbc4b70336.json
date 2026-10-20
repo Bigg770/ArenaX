@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM analytics_game_metrics WHERE game_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "total_matches",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "total_players",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_wagered",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_rewards_paid",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "avg_match_duration_secs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_updated",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e21c1fe9d310f0af16c4e87e89137bde0804d4bd568710fbfd7534bbc4b70336"
+}

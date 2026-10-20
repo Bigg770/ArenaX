@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse, Result};
 use serde::Deserialize;
+use rust_decimal::prelude::ToPrimitive;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -68,7 +69,7 @@ pub async fn get_transaction_history(
             status: t.status,
             reference: t.reference,
             description: t.description,
-            stellar_transaction_id: t.stellar_transaction_id,
+            stellar_transaction_id: t.stellar_transaction_id.map(|u| u.to_string()),
             created_at: t.created_at,
             completed_at: t.completed_at,
         })
@@ -96,7 +97,7 @@ pub async fn initiate_deposit(
         .create_transaction(
             user_id,
             TransactionType::Deposit,
-            amount.mantissa(),
+            amount.to_i64().ok_or_else(|| ApiError::bad_request("Invalid amount"))?,
             body.currency.clone(),
             format!("Wallet deposit via {}", body.payment_method),
             None,
@@ -139,7 +140,7 @@ pub async fn verify_deposit(
     // The active gateway comes from PAYMENT_PROVIDER (#1069); a provider
     // that isn't enabled verifies as false, as an unknown one always did.
     let verified = service
-        .verify_payment(&body.provider, &body.reference, transaction.amount.mantissa())
+        .verify_payment(&body.provider, &body.reference, transaction.amount.to_i64().unwrap_or(0))
         .await?;
 
     if verified {
@@ -188,9 +189,9 @@ pub async fn initiate_withdrawal(
     };
 
     let amount_in_smallest_unit = match body.currency.as_str() {
-        "NGN" | "ARENAX_TOKEN" => amount.mantissa(),
-        "XLM" => amount.mantissa() / 1_000_000,
-        _ => amount.mantissa(),
+        "NGN" | "ARENAX_TOKEN" => amount.to_i64().unwrap_or(0),
+        "XLM" => amount.to_i64().unwrap_or(0) / 1_000_000,
+        _ => amount.to_i64().unwrap_or(0),
     };
 
     if available_balance < amount_in_smallest_unit {
@@ -204,7 +205,7 @@ pub async fn initiate_withdrawal(
         .create_transaction(
             user_id,
             TransactionType::Withdrawal,
-            amount.mantissa(),
+            amount_in_smallest_unit,
             body.currency.clone(),
             format!("Withdrawal to {}", body.destination),
             None,

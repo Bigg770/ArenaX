@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id, match_id,\n                from_state as \"from_state: MatchAuthorityState\",\n                to_state as \"to_state: MatchAuthorityState\",\n                actor, timestamp, chain_tx, metadata, error\n            FROM match_transitions\n            WHERE match_id = $1\n            ORDER BY timestamp ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "match_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "from_state: MatchAuthorityState",
+        "type_info": {
+          "Custom": {
+            "name": "match_authority_state",
+            "kind": {
+              "Enum": [
+                "CREATED",
+                "STARTED",
+                "COMPLETED",
+                "DISPUTED",
+                "FINALIZED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "to_state: MatchAuthorityState",
+        "type_info": {
+          "Custom": {
+            "name": "match_authority_state",
+            "kind": {
+              "Enum": [
+                "CREATED",
+                "STARTED",
+                "COMPLETED",
+                "DISPUTED",
+                "FINALIZED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "actor",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "chain_tx",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "error",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "fa2e5c488e51942026424dca84ce23ede68825d6cde3ad41ebc358e7a007511d"
+}
