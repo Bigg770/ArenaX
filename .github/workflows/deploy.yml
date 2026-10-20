@@ -16,6 +16,12 @@ on:
       canary_bake_seconds:
         description: "Seconds to hold the canary split before full cutover"
         default: "60"
+      rehearsal_network:
+        description: "Testnet network for the contract rehearsal (testnet only)"
+        default: "testnet"
+      rehearsal_identity:
+        description: "Testnet identity used to sign rehearsal transactions"
+        default: "rehearsal"
 
 jobs:
   release-checklist:

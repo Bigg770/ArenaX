@@ -233,6 +233,59 @@ TEST_DATABASE_URL=postgresql://test:test@localhost/arenax_test \
 cargo test idempotency_integration
 ```
 
+### Sandboxed Deposit & Payout End-to-End Tests
+
+The end-to-end suite exercises the full deposit/payout lifecycle against a fake
+provider so that provider callbacks and ledger settlement are verified together
+rather than in isolation. It runs in CI with no real credentials and no network
+dependency.
+
+#### Fake provider orchestration
+
+A `SandboxProvider` stands in for the real payment provider and drives every
+stage of the lifecycle:
+
+- **Initiation** - returns a deterministic provider reference for a deposit or
+  withdrawal request.
+- **Webhook** - emits signed callbacks (success, failure, replay, tampered
+  signature, mismatched amount) that are fed through the real webhook handler.
+- **Reconciliation** - exposes a queryable provider state so the reconciler can
+  settle pending transactions.
+- **Withdrawal** - simulates payout submission and terminal outcomes.
+- **Ambiguous outcome recovery** - can return a timeout/unknown result so the
+  recovery path is exercised before any retry.
+
+```bash
+# Run the sandboxed end-to-end suite
+cargo test sandbox_e2e
+
+# Run a single scenario
+cargo test sandbox_e2e::deposit_success_credits_ledger_once
+```
+
+#### Scenarios and assertions
+
+| Scenario | Assertion |
+| --- | --- |
+| Successful deposit | Exactly one ledger credit is created for the payment. |
+| Replayed callback | No additional ledger entry; response is idempotent. |
+| Invalid signature callback | Rejected; no financial side effect. |
+| Mismatched amount callback | Rejected; no financial side effect. |
+| Payout timeout | Reconciled before retry; transaction reaches a user-visible terminal state. |
+
+Each scenario asserts on the ledger (entry count and balance) as well as the
+provider-facing status, so a passing test proves the callback and the ledger
+agree.
+
+#### CI execution
+
+The suite is wired into CI and requires no secrets:
+
+```bash
+# No provider credentials or network access required
+cargo test sandbox_e2e -- --nocapture
+```
+
 ### Performance Tests
 
 ```bash
