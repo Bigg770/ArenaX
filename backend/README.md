@@ -398,21 +398,8 @@ backend/
 - **Stellar Network**: Mainnet vs testnet configuration
 - **Monitoring**: Production monitoring setup
 
-## Contributing
-
-1. Follow Rust coding standards (`cargo fmt`, `clippy`)
-2. Write comprehensive tests
-3. Update documentation
-4. Test Stellar integration thoroughly
-5. Ensure security best practices
-
-## Support
-
-For backend development questions:
-- Check the main ArenaX documentation
-- Review Stellar Rust SDK documentation
-- Contact the development team
-
----
+# Increase case count locally
+PROPTEST_CASES=10000 cargo test --test property_brackets
+```
 
 /* … truncated 3893 chars — edit only what you need near the top … */
