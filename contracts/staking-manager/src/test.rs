@@ -300,13 +300,14 @@ fn test_withdraw_no_stake_fails() {
 
     env.mock_all_auths();
     client.create_tournament(&tournament_id, &1000);
+    client.update_tournament_state(&tournament_id, &(TournamentState::Active as u32));
     client.update_tournament_state(&tournament_id, &(TournamentState::Completed as u32));
 
     client.withdraw(&user1, &tournament_id);
 }
 
 #[test]
-#[should_panic(expected = "stake is not withdrawable")]
+#[should_panic(expected = "tournament has not reached a terminal state")]
 fn test_withdraw_locked_fails() {
     let (env, admin, user1, user2) = create_test_env();
     let contract_id = initialize_contract(&env, &admin);
@@ -347,7 +348,13 @@ fn test_slash() {
     let dispute_contract = Address::generate(&env);
     client.set_dispute_contract(&dispute_contract);
 
-    client.slash(&user1, &tournament_id, &slash_amount, &dispute_contract);
+    client.slash(
+        &user1,
+        &tournament_id,
+        &slash_amount,
+        &dispute_contract,
+        &tournament_id,
+    );
 
     let stake_info = client.get_stake(&user1, &tournament_id);
     assert_eq!(stake_info.amount, stake_amount - slash_amount);
@@ -380,7 +387,7 @@ fn test_slash_exceeds_stake_fails() {
     let dispute_contract = Address::generate(&env);
     client.set_dispute_contract(&dispute_contract);
 
-    client.slash(&user1, &tournament_id, &1500, &dispute_contract);
+    client.slash(&user1, &tournament_id, &1500, &dispute_contract, &tournament_id);
 }
 
 #[test]
@@ -404,7 +411,7 @@ fn test_slash_zero_amount_fails() {
     let dispute_contract = Address::generate(&env);
     client.set_dispute_contract(&dispute_contract);
 
-    client.slash(&user1, &tournament_id, &0, &dispute_contract);
+    client.slash(&user1, &tournament_id, &0, &dispute_contract, &tournament_id);
 }
 
 #[test]
@@ -426,7 +433,7 @@ fn test_slash_unauthorized_fails() {
     client.stake(&user1, &tournament_id, &1000);
 
     let random_address = Address::generate(&env);
-    client.slash(&user1, &tournament_id, &300, &random_address);
+    client.slash(&user1, &tournament_id, &300, &random_address, &tournament_id);
 }
 
 #[test]
@@ -546,7 +553,13 @@ fn test_full_staking_lifecycle() {
     let dispute_contract = Address::generate(&env);
     client.set_dispute_contract(&dispute_contract);
     
-    client.slash(&user1, &tournament_id, &(stake_amount / 2), &dispute_contract);
+    client.slash(
+        &user1,
+        &tournament_id,
+        &(stake_amount / 2),
+        &dispute_contract,
+        &tournament_id,
+    );
     let stake_info = client.get_stake(&user1, &tournament_id);
     assert_eq!(stake_info.amount, stake_amount / 2);
 
@@ -557,7 +570,7 @@ fn test_full_staking_lifecycle() {
     assert_eq!(token_client.balance(&user1), initial_balance - (stake_amount / 2));
 
     let user_info = client.get_user_stake_info(&user1);
-    assert_eq!(user_info.total_staked, stake_amount);
+    assert_eq!(user_info.total_staked, 0);
     assert_eq!(user_info.total_slashed, stake_amount / 2);
     assert_eq!(user_info.active_tournaments, 0);
     assert_eq!(user_info.completed_tournaments, 1);
@@ -684,7 +697,13 @@ fn test_slashing_authorization() {
     client.set_dispute_contract(&dispute_contract);
 
     // Slash by authorized dispute contract succeeds
-    client.slash(&user1, &tournament_id, &slash_amount, &dispute_contract);
+    client.slash(
+        &user1,
+        &tournament_id,
+        &slash_amount,
+        &dispute_contract,
+        &tournament_id,
+    );
 
     let user_info = client.get_user_stake_info(&user1);
     assert_eq!(user_info.total_slashed, slash_amount);
@@ -706,7 +725,7 @@ fn test_slash_non_existent_stake_fails() {
     client.set_dispute_contract(&dispute_contract);
 
     // Try to slash a user who hasn't staked
-    client.slash(&user1, &tournament_id, &100, &dispute_contract);
+    client.slash(&user1, &tournament_id, &100, &dispute_contract, &tournament_id);
 }
 
 #[test]
