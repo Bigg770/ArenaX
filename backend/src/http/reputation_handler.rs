@@ -7,8 +7,9 @@
 
 use crate::api_error::ApiError;
 use crate::models::{ApiResponse, PaginatedResponse, PaginationParams};
-use crate::service::reputation_service::{PlayerReputation, ReputationService};
+use crate::service::reputation_service::PlayerReputation;
 use actix_web::{web, HttpResponse};
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -78,7 +79,7 @@ pub async fn get_player_reputation(
             COALESCE(fair_play_score, 100) as fair_play_score,
             reputation_scoring_version as scoring_version,
             reputation_last_updated,
-            COALESCE(is_bad_actor, false) as is_bad_actor
+            COALESCE(is_bad_actor, false) as "is_bad_actor!"
         FROM users
         WHERE id = $1
         "#,
@@ -104,7 +105,7 @@ pub async fn get_player_reputation(
     Ok(HttpResponse::Ok().json(ApiResponse::success(rep)))
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 struct PlayerReputationData {
     user_id: Uuid,
     skill_score: i32,
@@ -130,7 +131,7 @@ pub async fn get_my_reputation(
             COALESCE(fair_play_score, 100) as fair_play_score,
             reputation_scoring_version as scoring_version,
             reputation_last_updated,
-            COALESCE(is_bad_actor, false) as is_bad_actor
+            COALESCE(is_bad_actor, false) as "is_bad_actor!"
         FROM users
         WHERE id = $1
         "#,
@@ -186,7 +187,7 @@ pub async fn get_reputation_history(
             match_id,
             match_authority_id,
             transaction_hash,
-            created_at::text
+            created_at::text as "created_at!"
         FROM reputation_events
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -308,8 +309,8 @@ pub async fn get_reputation_stats(
         "bad_actors_count": stats.bad_actors_count.unwrap_or(0),
         "low_fair_play_count": stats.low_fair_play_count.unwrap_or(0),
         "high_skill_count": stats.high_skill_count.unwrap_or(0),
-        "avg_skill": stats.avg_skill.unwrap_or(1000.0),
-        "avg_fair_play": stats.avg_fair_play.unwrap_or(100.0)
+        "avg_skill": stats.avg_skill.and_then(|d| d.to_f64()).unwrap_or(1000.0),
+        "avg_fair_play": stats.avg_fair_play.and_then(|d| d.to_f64()).unwrap_or(100.0)
     });
 
     Ok(HttpResponse::Ok().json(ApiResponse::success(response)))

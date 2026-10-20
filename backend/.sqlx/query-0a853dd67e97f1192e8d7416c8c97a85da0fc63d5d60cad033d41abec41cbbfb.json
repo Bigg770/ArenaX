@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_rating FROM user_elo WHERE user_id = $1 AND game = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_rating",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0a853dd67e97f1192e8d7416c8c97a85da0fc63d5d60cad033d41abec41cbbfb"
+}

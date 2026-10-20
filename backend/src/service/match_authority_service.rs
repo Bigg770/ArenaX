@@ -67,6 +67,10 @@ impl MatchAuthorityService {
         let match_lifecycle_contract = self.match_lifecycle_contract.clone();
 
         let match_id = execute_transaction(&db_pool, &config, move |tx| {
+            let dto_clone = dto_clone.clone();
+            let signer_secret_clone = signer_secret_clone.clone();
+            let soroban_service = soroban_service.clone();
+            let match_lifecycle_contract = match_lifecycle_contract.clone();
             Box::pin(async move {
                 // Check for idempotency within transaction
                 if let Some(ref key) = dto_clone.idempotency_key {
@@ -216,6 +220,9 @@ impl MatchAuthorityService {
         let match_lifecycle_contract = self.match_lifecycle_contract.clone();
 
         execute_transaction(&db_pool, &config, move |tx| {
+            let signer_secret_clone = signer_secret_clone.clone();
+            let soroban_service = soroban_service.clone();
+            let match_lifecycle_contract = match_lifecycle_contract.clone();
             Box::pin(async move {
                 // Get match with row lock
                 let match_entity = sqlx::query_as!(
@@ -735,7 +742,7 @@ impl MatchAuthorityService {
     // =============================================================================
 
     /// Validate state transition according to FSM rules
-    fn validate_transition(
+    pub fn validate_transition(
         &self,
         from: &MatchAuthorityState,
         to: &MatchAuthorityState,

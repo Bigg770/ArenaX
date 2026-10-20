@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO score_report_attempts\n                (id, match_id, player_id, attempted_at, accepted)\n            VALUES ($1, $2, $3, $4, FALSE)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "97a66399f1d4195faf63cb31bbcc971989739f87e4359fa0ca06721dc09e4c58"
+}

@@ -4,8 +4,8 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 /// API Key types
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
 pub enum KeyType {
     #[serde(rename = "api_key")]
     ApiKey,
@@ -22,8 +22,9 @@ impl Default for KeyType {
 }
 
 /// API Key status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum KeyStatus {
     Active,
     Revoked,
@@ -278,6 +279,9 @@ pub struct GenerateApiKeyRequest {
     pub rotation_interval: Option<String>,
     pub max_uses: Option<i32>,
     pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub overlap_duration_seconds: Option<i64>,
+    pub webhook_url: Option<String>,
 }
 
 /// Generate API key response

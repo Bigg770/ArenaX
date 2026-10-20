@@ -873,11 +873,21 @@ mod stellar_logging_tests {
     use tracing::span::{Attributes, Id, Record};
     use tracing::{Event, Metadata, Subscriber};
 
-    #[derive(Default, Clone)]
+    #[derive(Clone)]
     struct CapturedEvent {
         level: tracing::Level,
         message: String,
         fields: std::collections::HashMap<String, String>,
+    }
+
+    impl Default for CapturedEvent {
+        fn default() -> Self {
+            Self {
+                level: tracing::Level::INFO,
+                message: String::new(),
+                fields: std::collections::HashMap::new(),
+            }
+        }
     }
 
     struct FieldCollector<'a>(&'a mut CapturedEvent);

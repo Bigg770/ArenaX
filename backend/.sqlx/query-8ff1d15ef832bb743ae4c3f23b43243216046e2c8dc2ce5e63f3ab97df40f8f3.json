@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            CREATE TABLE IF NOT EXISTS idempotency_keys (\n                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n                key VARCHAR(255) NOT NULL UNIQUE,\n                request_hash VARCHAR(64) NOT NULL,\n                response_status SMALLINT NOT NULL,\n                response_headers JSONB,\n                response_body JSONB,\n                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),\n                expires_at TIMESTAMP WITH TIME ZONE NOT NULL,\n                used_at TIMESTAMP WITH TIME ZONE\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "8ff1d15ef832bb743ae4c3f23b43243216046e2c8dc2ce5e63f3ab97df40f8f3"
+}

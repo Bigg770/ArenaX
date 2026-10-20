@@ -157,7 +157,7 @@ impl WalletService {
             Box::pin(async move {
                 // Lock the wallet row for update to prevent concurrent modifications
                 sqlx::query!(
-                    "SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE",
+                    "SELECT 1 as dummy FROM wallets WHERE user_id = $1 FOR UPDATE",
                     user_id_clone
                 )
                 .fetch_one(&mut **tx)
@@ -273,7 +273,7 @@ impl WalletService {
         execute_transaction(&db_pool, &config, move |tx| {
             Box::pin(async move {
                 sqlx::query!(
-                    "SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE",
+                    "SELECT 1 as dummy FROM wallets WHERE user_id = $1 FOR UPDATE",
                     user_id_clone
                 )
                 .fetch_one(&mut **tx)
@@ -454,7 +454,7 @@ impl WalletService {
         execute_transaction(&db_pool, &config, move |tx| {
             Box::pin(async move {
                 sqlx::query!(
-                    "SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE",
+                    "SELECT 1 as dummy FROM wallets WHERE user_id = $1 FOR UPDATE",
                     user_id_clone
                 )
                 .fetch_one(&mut **tx)
