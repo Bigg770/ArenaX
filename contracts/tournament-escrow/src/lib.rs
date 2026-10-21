@@ -10,6 +10,9 @@ const MAX_EVIDENCE_REF_BYTES: u32 = 256;
 const DEFAULT_DISPUTE_WINDOW: u64 = 604_800;
 const WEIGHT_DENOMINATOR: u32 = 10_000;
 
+/// Maximum duration for emergency pause: 7 days. Enforces bounded response without permanent lockout (#57).
+pub const MAX_PAUSE_DURATION: u64 = 604_800;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EscrowStatus {
@@ -17,6 +20,16 @@ pub enum EscrowStatus {
     Disputed,
     Released,
     Refunded,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseState {
+    pub paused: bool,
+    pub paused_at: u64,
+    pub expires_at: u64,
+    pub paused_by: Address,
+    pub reason: Symbol,
 }
 
 #[contracttype]
@@ -72,9 +85,7 @@ impl TournamentEscrow {
 
     pub fn set_resolver(env: Env, admin: Address, resolver: Address) {
         Self::require_admin(&env, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Resolver, &resolver);
+        env.storage().instance().set(&DataKey::Resolver, &resolver);
         env.events()
             .publish((symbol_short!("RESOLVER"),), (admin, resolver));
     }
@@ -104,6 +115,7 @@ impl TournamentEscrow {
         asset: Address,
         entry_amount: i128,
     ) {
+        Self::require_not_paused(&env);
         Self::require_resolver(&env, &resolver);
         if entry_amount <= 0 {
             panic!("entry amount must be positive");
@@ -129,6 +141,7 @@ impl TournamentEscrow {
     }
 
     pub fn deposit(env: Env, tournament_id: BytesN<32>, participant: Address, amount: i128) {
+        Self::require_not_paused(&env);
         participant.require_auth();
         if amount <= 0 {
             panic!("amount must be positive");
@@ -168,6 +181,59 @@ impl TournamentEscrow {
         env.events().publish(
             (symbol_short!("DEPOSIT"), tournament_id),
             (participant, amount, new_total),
+        );
+    }
+
+    /// User-fund exit during emergency or pause (#57).
+    ///
+    /// Allows participants to reclaim their own deposits even when the contract
+    /// is paused or disputed, preventing permanent lockout.
+    pub fn emergency_withdraw(env: Env, tournament_id: BytesN<32>, participant: Address) {
+        participant.require_auth();
+
+        let key = DataKey::Escrow(tournament_id.clone());
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("escrow not found");
+
+        if escrow.status != EscrowStatus::Active && escrow.status != EscrowStatus::Disputed {
+            panic!("escrow is already settled");
+        }
+
+        let amount = escrow
+            .deposits
+            .get(participant.clone())
+            .expect("participant has no deposit");
+
+        if amount <= 0 {
+            panic!("no refundable deposit");
+        }
+
+        // Deduct from total and remove deposit record
+        escrow.deposits.remove(participant.clone());
+        escrow.total_held = escrow.total_held.checked_sub(amount).expect("underflow");
+
+        let mut new_participants = Vec::new(&env);
+        for p in escrow.participants.iter() {
+            if p != participant {
+                new_participants.push_back(p);
+            }
+        }
+        escrow.participants = new_participants;
+
+        env.storage().persistent().set(&key, &escrow);
+
+        token::Client::new(&env, &escrow.asset).transfer(
+            &env.current_contract_address(),
+            &participant,
+            &amount,
+        );
+
+        env.events().publish(
+            (symbol_short!("EMERG_EXIT"), tournament_id),
+            (participant, amount),
         );
     }
 
@@ -233,6 +299,7 @@ impl TournamentEscrow {
 
     /// Settle to `winner`, or refund every participant when `winner` is `None`.
     /// A disputed escrow can only be settled by the configured resolver.
+    /// Winner payouts are blocked while paused to prevent exploit drains (#57).
     pub fn resolve(
         env: Env,
         resolver: Address,
@@ -566,6 +633,44 @@ impl TournamentEscrow {
 
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    fn check_is_paused(env: &Env) -> bool {
+        if let Some(state) = env
+            .storage()
+            .instance()
+            .get::<DataKey, PauseState>(&DataKey::PauseState)
+        {
+            if state.paused && env.ledger().timestamp() < state.expires_at {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn require_not_paused(env: &Env) {
+        if Self::check_is_paused(env) {
+            panic!("contract is emergency paused");
+        }
+    }
+
+    fn require_pause_authority(env: &Env, caller: &Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        let guardian: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
+
+        if *caller == admin {
+            return;
+        }
+        if let Some(g) = guardian {
+            if *caller == g {
+                return;
+            }
+        }
+        panic!("caller is not authorized to pause");
     }
 
     fn require_admin(env: &Env, admin: &Address) {

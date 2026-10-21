@@ -445,6 +445,9 @@ jobs:
     - name: Run microbenchmarks
       run: cargo bench --locked -- --save-baseline current
 
+      - name: Enforce Performance Budgets (#48)
+        run: npm run check:perf-budgets
+
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: always()
