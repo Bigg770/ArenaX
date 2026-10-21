@@ -286,6 +286,7 @@ async fn main() -> io::Result<()> {
             .app_data(web::Data::new(notification_service.clone()))
             .app_data(web::Data::new(match_authority_service.clone()))
             .app_data(web::Data::new(protocol_signer_secret.clone()))
+            .wrap(crate::auth::AuthMiddleware::new((*jwt_service).clone()))
             .wrap(TenantContextMiddleware)
             .wrap(IdempotencyMiddleware::new(redis_conn.clone(), idempotency_policy.clone()))
             .wrap(RateLimitMiddleware::new(redis_conn.clone(), rate_limit_config.clone()))
@@ -468,8 +469,8 @@ async fn main() -> io::Result<()> {
                             .route("/{category}/history/{player_id}", web::get().to(crate::http::leaderboard_handler::get_rank_history))
                             .route("/{category}/refresh", web::post().to(crate::http::leaderboard_handler::refresh_leaderboard))
                             .route("/{category}/stats", web::get().to(crate::http::leaderboard_handler::get_leaderboard_stats))
-                    ),
-            )
+                        ),
+                    )
             // Registered at the app level, not inside the `/api` scope above:
             // both modules declare their own `/api/...` scope, so nesting them
             // would produce `/api/api/...`.
