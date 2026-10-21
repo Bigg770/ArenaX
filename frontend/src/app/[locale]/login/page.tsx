@@ -19,6 +19,7 @@ import { useNotifications } from "@/contexts/NotificationContext";
 import { loginSchema, type LoginFormData } from "@/lib/validations/auth";
 import { getSafeReturnPath } from "@/lib/safeReturnPath";
 import { cn } from "@/lib/utils";
+import { safeRedirectPath } from "@/lib/safeNavigation";
 
 export default function LoginPage() {
   const router = useRouter();
