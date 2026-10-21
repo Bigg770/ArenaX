@@ -17,6 +17,7 @@ import { FormError } from "@/components/ui/FormError";
 import { useAuth } from "@/hooks/useAuth";
 import { useNotifications } from "@/contexts/NotificationContext";
 import { loginSchema, type LoginFormData } from "@/lib/validations/auth";
+import { getSafeReturnPath } from "@/lib/safeReturnPath";
 import { cn } from "@/lib/utils";
 import { safeRedirectPath } from "@/lib/safeNavigation";
 
@@ -67,8 +68,9 @@ export default function LoginPage() {
         duration: 3000,
       });
       const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
-      const redirect = safeRedirectPath(params.get("redirect"));
-      router.replace(redirect);
+      router.replace(
+        getSafeReturnPath(params.get("redirect") ?? params.get("returnTo")),
+      );
     }
   }, [user, router, addToast]);
 
@@ -87,11 +89,15 @@ export default function LoginPage() {
       return;
     }
 
-    await login({
-      email: result.data.email,
-      password: result.data.password,
-      rememberMe: result.data.rememberMe,
-    });
+    try {
+      await login({
+        email: result.data.email,
+        password: result.data.password,
+        rememberMe: result.data.rememberMe,
+      });
+    } catch {
+      // AuthProvider exposes a generic error message through the form.
+    }
   };
 
   return (

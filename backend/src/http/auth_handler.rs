@@ -22,10 +22,10 @@ pub const REFRESH_TOKEN_COOKIE: &str = "auth_refresh_token";
 /// - `HttpOnly` — not readable by JavaScript.
 /// - `Secure`   — only sent over HTTPS (browsers ignore on localhost).
 /// - `SameSite=Strict` — never sent on cross-site requests.
-/// - `Path=/api` — scoped so it isn't sent for unrelated requests.
+/// - `Path=/` — available to the frontend middleware for protected page checks.
 fn build_access_cookie(token: &str, max_age_secs: i64) -> Cookie<'static> {
     Cookie::build(ACCESS_TOKEN_COOKIE, token.to_owned())
-        .path("/api")
+        .path("/")
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Strict)
@@ -50,7 +50,7 @@ fn build_refresh_cookie(token: &str, max_age_secs: i64) -> Cookie<'static> {
 /// Build expired (clearing) versions of both cookies.
 fn clear_access_cookie() -> Cookie<'static> {
     Cookie::build(ACCESS_TOKEN_COOKIE, "")
-        .path("/api")
+        .path("/")
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Strict)
