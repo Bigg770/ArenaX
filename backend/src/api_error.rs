@@ -127,6 +127,16 @@ impl ApiError {
     pub fn conflict(message: impl Into<String>) -> Self {
         ApiError::Conflict(message.into())
     }
+
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        ApiError::TooManyRequests {
+            message: message.into(),
+            limit: 0,
+            remaining: 0,
+            reset: 0,
+            retry_after: 60,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -274,6 +284,22 @@ impl From<validator::ValidationErrors> for ApiError {
         // response, and `validator` iterates a hash map.
         fields.sort_by(|a, b| a.field.cmp(&b.field).then(a.code.cmp(&b.code)));
         ApiError::ValidationFailed(fields)
+    }
+}
+
+impl From<crate::service::wallet_service::WalletError> for ApiError {
+    fn from(err: crate::service::wallet_service::WalletError) -> Self {
+        match err {
+            crate::service::wallet_service::WalletError::WalletNotFound => ApiError::not_found("Wallet not found"),
+            crate::service::wallet_service::WalletError::TransactionNotFound => ApiError::not_found("Transaction not found"),
+            crate::service::wallet_service::WalletError::InsufficientBalance { required, available } => {
+                ApiError::bad_request(format!("Insufficient balance: required {}, available {}", required, available))
+            }
+            crate::service::wallet_service::WalletError::InvalidAmount(msg) => ApiError::bad_request(msg),
+            crate::service::wallet_service::WalletError::PaymentVerificationFailed => ApiError::bad_request("Payment verification failed"),
+            crate::service::wallet_service::WalletError::DatabaseError(e) => ApiError::DatabaseError(e),
+            crate::service::wallet_service::WalletError::RedisError(e) => ApiError::RedisError(e),
+        }
     }
 }
 

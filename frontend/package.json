@@ -2,6 +2,7 @@
   "name": "arenax-frontend",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@10.9.3",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -16,6 +17,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "playwright test",
+    "test:visual": "playwright test --project=visual",
+    "test:visual:update": "playwright test --project=visual --update-snapshots",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },

@@ -1,11 +1,12 @@
-use crate::realtime::auth::RealtimeAuth;
-use crate::auth::jwt_service::{Claims, TokenType};
+use arenax_backend::realtime::auth::RealtimeAuth;
+use arenax_backend::auth::jwt_service::{Claims, TokenType};
+use arenax_backend::db::DbPool;
 use uuid::Uuid;
 use chrono::{Duration, Utc};
 
 #[tokio::test]
 async fn test_authorize_user_channel_success() {
-    let db_pool = crate::db::DbPool::new_test().await; // Assuming this exists or I'll mock it
+    let db_pool = DbPool::connect_lazy("postgres://localhost/dummy").unwrap();
     let auth = RealtimeAuth::new(db_pool);
 
     let user_id = Uuid::new_v4();
@@ -27,7 +28,7 @@ async fn test_authorize_user_channel_success() {
 
 #[tokio::test]
 async fn test_authorize_user_channel_denied() {
-    let db_pool = crate::db::DbPool::new_test().await;
+    let db_pool = DbPool::connect_lazy("postgres://localhost/dummy").unwrap();
     let auth = RealtimeAuth::new(db_pool);
 
     let user_id = Uuid::new_v4();

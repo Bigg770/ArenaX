@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT total_amount, currency FROM prize_pools WHERE tournament_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_amount",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "currency",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7347a308899bcf365d2f4f7ec45a7de72f7eb8a369e6974beffbddbd7f3c3729"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM transaction_monitor WHERE started_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7e648df509389cf2f5bb45cd7cd1d7bb6df7f06986f5908993dfe83423c4d7c"
+}

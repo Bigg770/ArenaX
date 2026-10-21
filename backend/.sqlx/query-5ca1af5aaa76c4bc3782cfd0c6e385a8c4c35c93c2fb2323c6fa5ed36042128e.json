@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE matches\n                SET status = $1, started_at = $2, report_deadline = $3, updated_at = $4\n                WHERE id = $5\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ca1af5aaa76c4bc3782cfd0c6e385a8c4c35c93c2fb2323c6fa5ed36042128e"
+}

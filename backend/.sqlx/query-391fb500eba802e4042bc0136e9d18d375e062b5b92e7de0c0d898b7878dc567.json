@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE tournament_rounds\n                    SET status = $1, completed_at = $2\n                    WHERE tournament_id = $3 AND status = $4\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "391fb500eba802e4042bc0136e9d18d375e062b5b92e7de0c0d898b7878dc567"
+}

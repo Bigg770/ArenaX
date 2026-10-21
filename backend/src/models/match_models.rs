@@ -122,65 +122,128 @@ pub struct EloHistory {
     pub id: Uuid,
     pub user_id: Uuid,
     pub game: String,
-    pub match_id: Uuid,
+    pub match_id: Option<Uuid>,
     pub rating_before: i32,
     pub rating_after: i32,
     pub rating_change: i32,
-    pub opponent_id: Uuid,
-    pub opponent_rating: i32,
+    pub opponent_id: Option<Uuid>,
+    pub opponent_rating: Option<i32>,
     pub result: MatchResult,
     pub created_at: DateTime<Utc>,
 }
 
 // Enums
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum MatchType {
-    Tournament,
-    Casual,
-    Ranked,
-    Practice,
+    Tournament = 0,
+    Casual = 1,
+    Ranked = 2,
+    Practice = 3,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum MatchStatus {
-    Pending,
-    Scheduled,
-    InProgress,
-    Completed,
+    Pending = 0,
+    Scheduled = 1,
+    InProgress = 2,
+    Completed = 3,
     /// Automatically set when both players submit contradictory score reports.
     /// Requires manual or oracle-based resolution before the match can be finalized.
-    Conflict,
-    Disputed,
-    Cancelled,
-    Abandoned,
+    Conflict = 4,
+    Disputed = 5,
+    Cancelled = 6,
+    Abandoned = 7,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum DisputeStatus {
-    Pending,
-    UnderReview,
-    Resolved,
-    Rejected,
+    Pending = 0,
+    UnderReview = 1,
+    Resolved = 2,
+    Rejected = 3,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum QueueStatus {
-    Waiting,
-    Matched,
-    Expired,
-    Cancelled,
+    Waiting = 0,
+    Matched = 1,
+    Expired = 2,
+    Cancelled = 3,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[repr(i32)]
 pub enum MatchResult {
-    Win,
-    Loss,
-    Draw,
+    Win = 0,
+    Loss = 1,
+    Draw = 2,
+}
+
+impl From<i32> for MatchType {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => MatchType::Tournament,
+            1 => MatchType::Casual,
+            2 => MatchType::Ranked,
+            3 => MatchType::Practice,
+            _ => MatchType::Casual,
+        }
+    }
+}
+
+impl From<i32> for MatchStatus {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => MatchStatus::Pending,
+            1 => MatchStatus::Scheduled,
+            2 => MatchStatus::InProgress,
+            3 => MatchStatus::Completed,
+            4 => MatchStatus::Conflict,
+            5 => MatchStatus::Disputed,
+            6 => MatchStatus::Cancelled,
+            7 => MatchStatus::Abandoned,
+            _ => MatchStatus::Pending,
+        }
+    }
+}
+
+impl From<i32> for DisputeStatus {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => DisputeStatus::Pending,
+            1 => DisputeStatus::UnderReview,
+            2 => DisputeStatus::Resolved,
+            3 => DisputeStatus::Rejected,
+            _ => DisputeStatus::Pending,
+        }
+    }
+}
+
+impl From<i32> for QueueStatus {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => QueueStatus::Waiting,
+            1 => QueueStatus::Matched,
+            2 => QueueStatus::Expired,
+            3 => QueueStatus::Cancelled,
+            _ => QueueStatus::Waiting,
+        }
+    }
+}
+
+impl From<i32> for MatchResult {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => MatchResult::Win,
+            1 => MatchResult::Loss,
+            2 => MatchResult::Draw,
+            _ => MatchResult::Loss,
+        }
+    }
 }
 
 // DTOs for API requests/responses

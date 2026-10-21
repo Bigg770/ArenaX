@@ -31,8 +31,30 @@ ON leaderboards(user_id, game, period);
 CREATE INDEX IF NOT EXISTS idx_leaderboards_history 
 ON leaderboards(user_id, game, updated_at DESC);
 
+-- Issue #92: tournament browse — filter by status/game, order by start_time
+CREATE INDEX IF NOT EXISTS idx_tournaments_status_game_start 
+ON tournaments(status, game, start_time DESC);
+
+-- Issue #92: matchmaking queue — match open entries by game/mode ordered by enqueue time
+CREATE INDEX IF NOT EXISTS idx_matchmaking_queue_game_mode_enqueued 
+ON matchmaking_queue(game, game_mode, enqueued_at) 
+WHERE status = 'waiting';
+
+-- Issue #92: wallet history — per-user ledger ordered by created_at
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_created 
+ON wallet_transactions(user_id, created_at DESC);
+
+-- Issue #92: dispute queues — open disputes by status ordered by created_at
+CREATE INDEX IF NOT EXISTS idx_disputes_status_created 
+ON disputes(status, created_at) 
+WHERE status IN ('open', 'under_review');
+
 -- Add statistics for query planner optimization
 ANALYZE leaderboards;
 ANALYZE user_elo;
 ANALYZE matches;
 ANALYZE users;
+ANALYZE tournaments;
+ANALYZE matchmaking_queue;
+ANALYZE wallet_transactions;
+ANALYZE disputes;

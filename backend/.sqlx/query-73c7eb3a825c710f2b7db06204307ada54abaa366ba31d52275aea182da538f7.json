@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id as transaction_id,\n                operation,\n                isolation_level,\n                started_at,\n                completed_at,\n                duration_ms,\n                status as \"status: TransactionStatus\",\n                retry_count,\n                error_message,\n                metadata\n            FROM transaction_monitor\n            WHERE started_at < $1\n              AND completed_at IS NULL\n              AND status = 'started'\n            ORDER BY started_at ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "transaction_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "operation",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "isolation_level",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "duration_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "status: TransactionStatus",
+        "type_info": {
+          "Custom": {
+            "name": "transaction_status",
+            "kind": {
+              "Enum": [
+                "started",
+                "completed",
+                "failed",
+                "retried",
+                "rolled_back"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "retry_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "error_message",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "73c7eb3a825c710f2b7db06204307ada54abaa366ba31d52275aea182da538f7"
+}

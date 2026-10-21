@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO analytics_game_metrics\n                (game_id, total_matches, total_players, total_wagered,\n                 total_rewards_paid, avg_match_duration_secs, last_updated)\n            VALUES ($1, 1, $2, $3, $4, $5, NOW())\n            ON CONFLICT (game_id) DO UPDATE SET\n                total_matches            = analytics_game_metrics.total_matches + 1,\n                total_players            = analytics_game_metrics.total_players + EXCLUDED.total_players,\n                total_wagered            = analytics_game_metrics.total_wagered + EXCLUDED.total_wagered,\n                total_rewards_paid       = analytics_game_metrics.total_rewards_paid + EXCLUDED.total_rewards_paid,\n                avg_match_duration_secs  = (\n                    analytics_game_metrics.avg_match_duration_secs\n                    * analytics_game_metrics.total_matches\n                    + EXCLUDED.avg_match_duration_secs\n                ) / (analytics_game_metrics.total_matches + 1),\n                last_updated             = NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a0d08895b5268148c81f416a9a5422d738db2ef5df6e49b4efe25b479affa6cd"
+}

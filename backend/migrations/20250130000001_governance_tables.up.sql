@@ -106,6 +106,82 @@ CREATE INDEX IF NOT EXISTS idx_governance_chain_sync_synced_at
     ON governance_chain_sync(synced_at DESC);
 
 -- ============================================================================
+-- Operator Audit Log Table (append-only, tamper-evident hash chain)
+-- ============================================================================
+-- Records privileged operator actions (moderation, dispute resolution,
+-- account suspension, feature-flag and payout interventions) with actor,
+-- reason, target and before/after metadata. Credentials and private evidence
+-- are intentionally excluded from the metadata payload.
+
+CREATE TABLE IF NOT EXISTS operator_audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Monotonic sequence used to order the hash chain
+    seq BIGSERIAL UNIQUE NOT NULL,
+    -- Authenticated operator who performed the action
+    actor_id VARCHAR(128) NOT NULL,
+    -- Role asserted at action time (e.g. ADMIN, MODERATOR, SUPPORT)
+    actor_role VARCHAR(32) NOT NULL,
+    -- Category of privileged action
+    action VARCHAR(64) NOT NULL
+        CHECK (action IN (
+            'MODERATION',
+            'DISPUTE_RESOLUTION',
+            'ACCOUNT_SUSPENSION',
+            'FEATURE_FLAG',
+            'PAYOUT_INTERVENTION'
+        )),
+    -- Type of the affected entity (e.g. user, dispute, payout, flag)
+    target_type VARCHAR(64) NOT NULL,
+    -- Identifier of the affected entity
+    target_id VARCHAR(128) NOT NULL,
+    -- Operator-supplied justification (required where policy demands it)
+    reason TEXT,
+    -- Redacted before/after state (no credentials or private evidence)
+    before_state JSONB NOT NULL DEFAULT '{}',
+    after_state JSONB NOT NULL DEFAULT '{}',
+    -- Hash of the previous record in the chain (NULL for genesis)
+    prev_hash VARCHAR(64),
+    -- Hash of this record's canonical payload chained with prev_hash
+    record_hash VARCHAR(64) NOT NULL,
+    -- When the action was recorded
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Index for searching by actor
+CREATE INDEX IF NOT EXISTS idx_operator_audit_log_actor
+    ON operator_audit_log(actor_id);
+
+-- Index for searching by action category
+CREATE INDEX IF NOT EXISTS idx_operator_audit_log_action
+    ON operator_audit_log(action);
+
+-- Index for searching by target
+CREATE INDEX IF NOT EXISTS idx_operator_audit_log_target
+    ON operator_audit_log(target_type, target_id);
+
+-- Index for time-based queries
+CREATE INDEX IF NOT EXISTS idx_operator_audit_log_created_at
+    ON operator_audit_log(created_at DESC);
+
+-- Enforce append-only semantics: block UPDATE and DELETE on audit records
+CREATE OR REPLACE FUNCTION operator_audit_log_block_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'operator_audit_log is append-only; % is not permitted', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_operator_audit_log_no_update ON operator_audit_log;
+CREATE TRIGGER trg_operator_audit_log_no_update
+    BEFORE UPDATE ON operator_audit_log
+    FOR EACH ROW EXECUTE FUNCTION operator_audit_log_block_mutation();
+
+DROP TRIGGER IF EXISTS trg_operator_audit_log_no_delete ON operator_audit_log;
+CREATE TRIGGER trg_operator_audit_log_no_delete
+    BEFORE DELETE ON operator_audit_log
+    FOR EACH ROW EXECUTE FUNCTION operator_audit_log_block_mutation();
+
+-- ============================================================================
 -- Views
 -- ============================================================================
 
@@ -164,6 +240,9 @@ COMMENT ON TABLE governance_approvals IS
 COMMENT ON TABLE governance_chain_sync IS
     'Audit log of blockchain transactions related to governance operations';
 
+COMMENT ON TABLE operator_audit_log IS
+    'Append-only, hash-chained audit log of privileged operator actions (moderation, disputes, suspensions, feature flags, payouts)';
+
 COMMENT ON COLUMN governance_proposals.proposal_id IS
     'On-chain proposal identifier (hex-encoded 32 bytes)';
 
@@ -172,3 +251,15 @@ COMMENT ON COLUMN governance_proposals.status IS
 
 COMMENT ON COLUMN governance_chain_sync.operation IS
     'Type of governance operation: CREATE, APPROVE, REVOKE, EXECUTE, or CANCEL';
+
+COMMENT ON COLUMN operator_audit_log.prev_hash IS
+    'Hash of the previous audit record; NULL only for the genesis record';
+
+COMMENT ON COLUMN operator_audit_log.record_hash IS
+    'SHA-256 of the canonical record payload chained with prev_hash; used for integrity verification';
+
+COMMENT ON COLUMN operator_audit_log.before_state IS
+    'Redacted before-state metadata; must never contain credentials or private evidence';
+
+COMMENT ON COLUMN operator_audit_log.after_state IS
+    'Redacted after-state metadata; must never contain credentials or private evidence';

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO job_dead_letters (id, job_id, payload, error, created_at)\n            VALUES ($1, $2, $3, $4, NOW())\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3b83a28d91e3a8faa29b94057a2a4c6ca07c937571d87efcf96ca30d3d21d72e"
+}

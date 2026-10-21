@@ -1,5 +1,8 @@
 # ArenaX Stellar Smart Contracts
 
+See [ROLE_ADMINISTRATION.md](./ROLE_ADMINISTRATION.md) for role hierarchy,
+grant/revoke authority, admin handoff, and cross-contract authorization rules.
+
 ## Overview
 
 The ArenaX contracts workspace contains a suite of **Soroban smart contracts** powering the ArenaX gaming platform on the Stellar blockchain. It includes token economics, NFT marketplaces, staking, governance, anti-cheat, and batch operations—all composable, gas-optimized, and rigorously tested.
@@ -424,6 +427,7 @@ Three staking subsystems in one contract:
 | `cross-contract-utils/`      | Reusable cross-contract call patterns                  |
 | `cross-game-assets/`         | Cross-title NFT bridge + wrapped assets                |
 | `event-manager/`             | Webhook-style event dispatch to off-chain indexers     |
+| `match-lifecycle/`           | Participant-authorized on-chain match state machine    |
 | `staking-rewards/`           | Standalone reward calculator (used by staking-manager) |
 | `time-lock/`                 | TimelockExecutor for governance proposals (≥ 48h wait) |
 | `treasury/`                  | Multi-sig + streaming treasury management             |
