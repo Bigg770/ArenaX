@@ -13,6 +13,9 @@ const WEIGHT_DENOMINATOR: u32 = 10_000;
 /// Maximum duration for emergency pause: 7 days. Enforces bounded response without permanent lockout (#57).
 pub const MAX_PAUSE_DURATION: u64 = 604_800;
 
+/// Maximum duration for emergency pause: 7 days. Enforces bounded response without permanent lockout (#57).
+pub const MAX_PAUSE_DURATION: u64 = 604_800;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EscrowStatus {
